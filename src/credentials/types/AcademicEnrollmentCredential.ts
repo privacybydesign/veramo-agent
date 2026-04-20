@@ -27,7 +27,7 @@ export class AcademicEnrollmentCredential extends CredentialType
     }
 
     private convertDataToClaims(input:any):any {
-        var retval:any = {};
+        const retval:any = {};
         for (const key of Object.keys(input)) {
             switch (key) {
                 case 'crohoCreboCode':

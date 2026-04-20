@@ -8,51 +8,27 @@ import {
     BeforeUpdate,
 } from 'typeorm'
 
-@Entity('credential')
-export class Credential extends BaseEntity {
+@Entity('session')
+export class Session extends BaseEntity {
     @PrimaryGeneratedColumn('increment')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     id: number;
     
     @Column('varchar')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     uuid: string
 
     @Column('varchar')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     state: string
 
     @Column('varchar')
-    //@ts-ignore
-    credpid: string
-
-    @Column('varchar')
-    //@ts-ignore
-    holder: string
-
-    @Column('varchar')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     issuer: string
 
-    @Column('varchar')
-    //@ts-ignore
-    credentialId: string
-
     @Column({ type: 'simple-json' })
-    //@ts-ignore
-    metadata: StringKeyedObject;
-
-    @Column({ type: 'simple-json' })
-    //@ts-ignore
-    claims: StringKeyedObject
-
-    @Column({ type: 'simple-json', nullable: true })
-    //@ts-ignore
-    statuslists?: StringKeyedObject
-
-    @Column('timestamp')
-    //@ts-ignore
-    issuanceDate: Date
+    //@ts-expect-error has no initializer
+    data: StringKeyedObject;
 
     @Column({ type: 'timestamp', nullable: true })
     expirationDate?: Date
@@ -69,10 +45,10 @@ export class Credential extends BaseEntity {
     }
 
     @Column({ type: 'timestamp', select: true })
-        //@ts-ignore
+    //@ts-expect-error has no initializer
     saveDate: Date
 
     @Column({ type: 'timestamp', select: true })
-        //@ts-ignore
+    //@ts-expect-error has no initializer
     updateDate: Date
 }

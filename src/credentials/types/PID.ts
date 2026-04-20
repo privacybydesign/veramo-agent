@@ -29,7 +29,7 @@ export class PID extends CredentialType
     }
 
     private convertDataToClaims(input:any):any {
-        var retval:any = {};
+        const retval:any = {};
         for (const key of Object.keys(input)) {
             switch (key) {
                 case "personal_administrative_number":
@@ -62,11 +62,13 @@ export class PID extends CredentialType
                 case "age_over_13":
                 case "age_over_18":
                 case "sex":
-                    const value = parseFloat(toStringByJoin(input[key]));
-                    if (!isNaN(value) && value !== null) {
-                        retval[key] = value;
-                    }                
-                    break;
+                    {
+                        const value = parseFloat(toStringByJoin(input[key]));
+                        if (!isNaN(value) && value !== null) {
+                            retval[key] = value;
+                        }                
+                        break;
+                    }
             }
         }
         return retval;

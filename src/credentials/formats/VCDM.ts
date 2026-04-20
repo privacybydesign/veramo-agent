@@ -4,6 +4,7 @@ const debug = Debug('issuer:vcdm');
 import { LanguageObject, VCDM as VCDMType} from '#root/credentials/formats/VCDMTypes';
 import { Credential } from '#root/credentials/Credential';
 import moment from 'moment';
+import { HolderData } from '#root/types/internal';
 
 export class VCDM
 {
@@ -14,16 +15,16 @@ export class VCDM
         this.credential = credential;
     }
 
-    public build():VCDMType
+    public async build():Promise<VCDMType>
     {
         debug("creating VCDM");
         const issuerName = this.createLanguageObject('issuer_name');
         const issuerDescription = this.createLanguageObject('issuer_description');
-        let context = (this.credential.contexts ?? []).slice();
+        const context = (this.credential.contexts ?? []).slice();
         if (!context.includes('https://www.w3.org/ns/credentials/v2')) {
             context.unshift('https://www.w3.org/ns/credentials/v2');
         }
-        let baseCredential:VCDMType = {
+        const baseCredential:VCDMType = {
             "@context": context,
             type: ["VerifiableCredential", this.credential.type],
             credentialSubject: Object.assign({}, this.credential.data),
@@ -34,6 +35,11 @@ export class VCDM
                 ...(issuerDescription != '' ? {description: issuerDescription} : {}),
             }
         };
+
+        // if we have issuer metadata, allow enriching our basic information
+        if (this.credential.metaData.issuer) {
+            baseCredential.issuer = Object.assign({}, this.credential.metaData.issuer, baseCredential.issuer);
+        }
 
         // If present, id property's value MUST be a single URL, recommended to be machine readable
         // name and description can be language objects
@@ -46,7 +52,7 @@ export class VCDM
 
         // Each object MAY also contain an id property to identify the subject, as described in Section 4.4 Identifiers.
         if (this.credential.automaticallyBindHolder && !baseCredential.credentialSubject.id && this.credential.holder) {
-            baseCredential.credentialSubject.id = this.credential.holder;
+            baseCredential.credentialSubject.id = await this.convertHolderToDid(this.credential.holder);
         }
 
         if (this.credential.metaData.issuanceDate) {
@@ -62,13 +68,22 @@ export class VCDM
         this.addStatusListData(baseCredential);
         this.addEvidenceData(baseCredential);
         this.addOtherMetadata(baseCredential);
+        this.addOIDFedMetadata(baseCredential, this.credential.issuer?.options.baseUrl);
         return baseCredential;
+    }
+
+    private async convertHolderToDid(holder:HolderData):Promise<string>
+    {
+        if ((holder.type == "kid" || holder.type == "jwk") && holder.data) {
+            return holder.data;
+        }
+        throw new Error("VCDM not supported for x5c JWT proofs");
     }
 
     private createLanguageObject(value:string)
     {
         if (this.credential.dictionary[value]) {
-            let retval:LanguageObject[] = [];
+            const retval:LanguageObject[] = [];
             for (const label of this.credential.dictionary[value]) {
                 // TODO: this was temporarily changed due to Sphereon and Unime not supporting it
                 return label.value;
@@ -80,6 +95,35 @@ export class VCDM
             return retval;
         }
         return '';
+    }
+
+    private addOIDFedMetadata(baseCredential:VCDMType, entity?:string)
+    {
+
+        if (!baseCredential.termsOfUse) {
+            baseCredential.termsOfUse = {
+                "type": "OpenIDFederation",
+                "policyId": entity
+            };
+        }
+        else {
+            if (!Array.isArray(baseCredential.termsOfUse) && baseCredential.termsOfUse.type != 'OpenIDFederation') {
+                baseCredential.termsOfUse = [baseCredential.termsOfUse];
+                baseCredential.termsOfUse.push({
+                    "type": "OpenIDFederation",
+                    "policyId": entity
+                });
+            }
+            else if(Array.isArray(baseCredential.termsOfUse)) {
+                const hasOIDFed = baseCredential.termsOfUse.filter((i) => i.type == 'OpenIDFederation').length  > 0;
+                if (!hasOIDFed) {
+                    baseCredential.termsOfUse.push({
+                        "type": "OpenIDFederation",
+                        "policyId": entity
+                    }); 
+                }
+            }
+        }
     }
 
     private addStatusListData(baseCredential:VCDMType)
@@ -129,10 +173,13 @@ export class VCDM
                     // pass
                     break;
                 case 'issuer':
-                    baseCredential.issuer = this.credential.metaData[key];
+                    baseCredential.issuer = Object.assign({}, this.credential.metaData.issuer, baseCredential.issuer);
                     // make sure our issuer.id is set correctly though
                     if (typeof(baseCredential.issuer) == 'object') {
                         baseCredential.issuer.id = this.credential.issuer!.did!.did;
+                    }
+                    else {
+                        baseCredential.issuer = this.credential.issuer!.did!.did;
                     }
                     break;
                 default:

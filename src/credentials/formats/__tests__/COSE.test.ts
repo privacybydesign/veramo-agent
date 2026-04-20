@@ -1,4 +1,4 @@
-import { vi, expect, test} from 'vitest';
+import { expect, test} from 'vitest';
 import { Issuer } from '../../../issuer/Issuer';
 import { COSE } from '../COSE';
 import { Credential } from '../../Credential';
@@ -14,7 +14,7 @@ test('COSE conversion', async () => {
     credential.issuer = issuer;
     credential.type = 'CredentialTest';
     credential.data = {name:'Test'};
-    credential.holder = 'did:test:holder';
+    credential.holder = {type:'kid', did: 'did:test:holder', data: 'did:test:holder#0' };
     credential.metaData.issuanceDate = '2025-01-01 01:01:01';
 
     const cose = new COSE(credential);

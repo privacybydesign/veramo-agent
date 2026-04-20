@@ -5,14 +5,14 @@ import { CREDENTIAL_CONFIGURATION_PATH } from "../environment.js";
 import { loadJsonFiles } from "utils/generic.js";
 import { CredentialConfiguration } from "types/specification/metadata.js";
 import { getDbConnection } from '#root/database/databaseService';
-import { CredentialType } from '#root/packages/datastore/index';
+import { CredentialType } from '#root/database/entities/CredentialType';
 import { hasAdminBearerToken } from '#root/utils/adminBearerToken';
 
 export interface CredentialConfigurationStore {
   [x: string]: CredentialConfiguration;
 }
 
-var _credentialConfigurationStore: CredentialConfigurationStore = {};
+const _credentialConfigurationStore: CredentialConfigurationStore = {};
 export const getCredentialConfigurationStore = (): CredentialConfigurationStore => _credentialConfigurationStore;
 
 async function readFromDB()
@@ -60,7 +60,7 @@ async function readFromFile()
       }
     }
     catch (e) {
-      debug("Missing credentials configuration path");
+      debug("Missing credentials configuration path", e);
     }
   }
   catch (e) {

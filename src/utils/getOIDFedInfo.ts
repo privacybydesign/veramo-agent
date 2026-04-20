@@ -1,0 +1,58 @@
+import { getDIDConfigurationStore } from "#root/dids/Store";
+import { Issuer } from "#root/issuer/Issuer";
+import { JWT } from "#root/jwt/JWT";
+import { Factory } from "@muisit/cryptokey";
+import moment from "moment";
+
+export async function getOIDFedInfo(issuer:Issuer, date?:string) {
+  const dids = getDIDConfigurationStore();
+  const oidfedkey = await dids.get(process.env.OIDFED_KEY ?? 'oidfed');
+  if (!oidfedkey) {
+    throw new Error("Missing OIDFed key configuration");
+  }
+
+  const jwk = await Factory.toJWK(oidfedkey.key);
+  const issuerJWK = await Factory.toJWK(issuer.key!);
+  // DIIPv5: the kid in the OIDFed JWK must/should match the kid as used in the credential kid header (absolute or relative)
+  issuerJWK.kid = issuer.did!.did + '#' + Factory.getKeyReference(issuer.did!.did);
+  const metadata = issuer.generateMetadata();
+  const logouri = metadata.display![0].logo?.uri;
+  const jwt = new JWT();
+  jwt.header = {
+    alg: oidfedkey.key.algorithms()[0],
+    typ: 'entity-statement+jwt',
+    kid: jwk.kid
+  };
+  const dpl = (metadata.display ?? [])[0];
+  jwt.payload = {
+    "iss": issuer.options.baseUrl,
+    "sub": issuer.options.baseUrl,
+    "iat": moment(date).unix(),
+    "exp": moment(date).unix() + 300,
+    "metadata": {
+      "federation_entity": {
+        "display_name": dpl ? dpl.name : issuer.options.name,
+        ...(logouri && {"logo_uri": logouri}),
+        "organization_name": dpl ? dpl.name : issuer.options.name,
+        "contacts": [process.env.OIDFED_ADMIN_CONTACT]
+      },
+      "openid_credential_issuer": metadata,
+      "vc_issuer": {
+        "jwks": [issuerJWK]
+      }
+    },
+    "jwks": [jwk],
+    "authority_hints": [process.env.OIDFED_AUTH]
+  };
+
+  for (const dpl of metadata.display!) {
+    // language tags in the JWT claim follows BCP47 / RFC 5646
+    // which should be the same as for the display metadata
+    if (dpl.locale && dpl.locale.length) {
+        jwt.payload.metadata.federation_entity['display_name#' + dpl.locale] = dpl.name!;
+        jwt.payload.metadata.federation_entity['organization_name#' + dpl.locale] = dpl.name!;
+    }
+  }
+  await jwt.sign(oidfedkey.key, oidfedkey.key.algorithms()[0]);
+  return jwt.token;
+}

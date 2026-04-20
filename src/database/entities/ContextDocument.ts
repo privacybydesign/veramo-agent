@@ -3,25 +3,27 @@ import {
   Column,
   PrimaryGeneratedColumn,
   BaseEntity,
-  Index,
   BeforeInsert,
   BeforeUpdate,
 } from 'typeorm'
 
-@Entity('credential_type')
-@Index(['name'], { unique: true })
-export class CredentialType extends BaseEntity {
+@Entity('context_document')
+export class ContextDocument extends BaseEntity {
     @PrimaryGeneratedColumn('increment')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     id: number;
 
-    @Column('text')
-    // @ts-ignore
-    configuration: string
-
     @Column({ type: 'varchar'})
-    // @ts-ignore
+    //@ts-expect-error has no initializer
     name: string
+
+    @Column('varchar')
+    //@ts-expect-error has no initializer
+    path: string
+
+    @Column('text')
+    //@ts-expect-error has no initializer
+    document: string
 
     @BeforeInsert()
     setSaveDate() {
@@ -35,10 +37,10 @@ export class CredentialType extends BaseEntity {
     }
 
     @Column({ type: 'timestamp'})
-    // @ts-ignore
+    //@ts-expect-error has no initializer
     saveDate: Date
 
     @Column({ type: 'timestamp'})
-    // @ts-ignore
+    //@ts-expect-error has no initializer
     updateDate: Date
 }

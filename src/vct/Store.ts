@@ -9,7 +9,7 @@ import { loadJsonFiles } from "#root/utils/generic";
 import { getBaseUrl } from "#root/utils/getBaseUrl";
 import { Vct } from "#root/types/specification/vct";
 import { getDbConnection } from '#root/database/databaseService';
-import { VCTDocument } from '#root/packages/datastore/index';
+import { VCTDocument } from '#root/database/entities/index';
 import { hasAdminBearerToken } from '#root/utils/adminBearerToken';
 
 
@@ -25,7 +25,7 @@ export interface VctConfigurationStore {
   [x: string]: VctConfiguration;
 }
 
-var _vctConfigurationStore: VctConfigurationStore = {};
+const _vctConfigurationStore: VctConfigurationStore = {};
 export const getVctConfigurationStore = (): VctConfigurationStore => _vctConfigurationStore;
 
 async function readFromDB()
@@ -115,7 +115,7 @@ export async function initialiseVctConfigurationStore() {
 export function getVctForCredentialType(credentialType:string): Vct|null
 {
     for (const key in _vctConfigurationStore) {
-        var cfg = _vctConfigurationStore[key];
+        const cfg = _vctConfigurationStore[key];
         if (cfg.credentials.includes(credentialType)) {
             return cfg.document;
         }

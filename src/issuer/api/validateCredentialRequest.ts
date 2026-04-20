@@ -5,17 +5,16 @@ import { Request } from 'express'
 import { Issuer } from '#root/issuer/Issuer';
 import { CredentialOfferStatus, ErrorCodes } from '#root/types/api';
 import { ApiState } from '#root/types/internal';
-import { CredentialRequest, ProofOfPossession } from '#root/types/specification/credential_request';
+import { CredentialRequest } from '#root/types/specification/credential_request';
 import { JWT } from '#root/jwt/JWT';
-import { getSignatureKeyFromProofJwt } from '#root/issuer/lib/getSignatureKeyFromProofJwt';
-import { Factory } from '@muisit/cryptokey';
-import { Session } from '#root/packages/datastore/entities/Session';
+import { getHolderKeyFromProofJwt } from '#root/issuer/lib/getSignatureKeyFromProofJwt';
+import { Session } from '#root/database/entities/index';
 import moment from 'moment';
 
 export async function validateCredentialRequest(issuer:Issuer, request:Request)
 {
     debug("validating credential request", request.body);
-    let error:ApiState = {error:ErrorCodes.NO_ERROR, description: ''};
+    const error:ApiState = {error:ErrorCodes.NO_ERROR, description: ''};
 
     const jwt = extractBearerToken(request.header('Authorization'));
     if (!jwt) {
@@ -29,11 +28,12 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
 
     // try to decode the access token as if it were a JWT
     try {
+        // this decodes the JWT, or retrieves data from the user info endpoint
         const data  = await verifyAccessTokenJWT(jwt, issuer);
 
         if (issuer.usesAuthorisedCodeFlow()) {
             // the issuer should be one of our authorization servers
-            if (!issuer.metadata.authorization_servers!.includes(data?.payload?.iss)) {
+            if (!issuer.options?.authorizationEndpoint == data?.payload?.iss) {
                 debug("invalid because the access token issuer is not in our AS list", data!.payload.iss);
                 error.error = ErrorCodes.INVALID_REQUEST;
                 error.description = "Unauthorised";
@@ -52,6 +52,10 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
     
         const stateid = data?.payload?.issuer_state;
         session = await issuer.getSessionByState(stateid);
+        if (session) {
+            debug('setting session access data to ', data?.payload);
+            session.data.accessData = data?.payload;
+        }
 
         if (!issuer.usesAuthorisedCodeFlow() && session && session.data?.status != CredentialOfferStatus.ACCESS_TOKEN_CREATED) {
             debug("invalid because we use pre-authorised code flow and did not yet create an access token");
@@ -83,8 +87,9 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
     // spec ID-1: 8.2: credential_configuration_id: REQUIRED if a credential_identifiers
     // parameter was not returned from the Token Response as part of the authorization_details parameter.
     // As we return authorization_details, this should never happen for proper wallets
+    // However, for authorization_code flow, we do not control the token endpoint, so we do not know what
+    // the wallet ay decide.
     else if(request.body.credential_configuration_id) {
-        debug("determining credential data set based on configuration id, which is not supported");
         credentialDataSet = session.data?.credentialDataSets[request.body.credential_configuration_id];
     }
 
@@ -145,7 +150,7 @@ async function validateCredentialRequestProofs(issuer:Issuer, session:Session, c
     if ((!proofs || !proofs.length) && credentialRequest.proof && credentialRequest.proof.proof_type == 'jwt' && credentialRequest.proof.jwt) {
         proofs = [credentialRequest.proof?.jwt];
     }
-    let proofResults:ApiState[] = [];
+    const proofResults:ApiState[] = [];
 
     if (!proofs || proofs.length < 1) {
         return {
@@ -155,7 +160,7 @@ async function validateCredentialRequestProofs(issuer:Issuer, session:Session, c
     }
 
     for(const proof of proofs) {
-        let proofError = await validateCredentialRequestProof(issuer, session, proof);
+        const proofError = await validateCredentialRequestProof(issuer, session, proof);
 
         if (proofError.error != ErrorCodes.NO_ERROR) {
             return proofError;
@@ -164,13 +169,12 @@ async function validateCredentialRequestProofs(issuer:Issuer, session:Session, c
     }
 
     // return the did of the proof, this is the holder key
-    debug("Proof is valid", proofResults);
     return { error: ErrorCodes.NO_ERROR, description: '', data: proofResults};
 }
 
 async function validateCredentialRequestProof(issuer:Issuer, session:Session, proof:string):Promise<ApiState>
 {
-    let error:ApiState = {error:ErrorCodes.NO_ERROR, description: ''};
+    const error:ApiState = {error:ErrorCodes.NO_ERROR, description: ''};
     
     if (!proof || !proof.length) {
         debug("Proof is invalid because it is missing", proof);
@@ -187,14 +191,14 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
         return error;
     }
 
-    const ckey = await getSignatureKeyFromProofJwt(jwt);
-    if (!ckey) {
+    const holderData = await getHolderKeyFromProofJwt(jwt);
+    if (!holderData || !holderData.ckey) {
         debug("Proof is invalid because the issuer key cannot be resolved");
         error.error = ErrorCodes.INVALID_REQUEST;
         error.description = "Invalid proof of possession";
         return error;
     }
-    const verificationResult = await jwt.verify(ckey);
+    const verificationResult = await jwt.verify(holderData.ckey);
 
     if (!verificationResult) {
         debug("Proof is invalid because the token could not be verified", verificationResult);
@@ -230,30 +234,15 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
         return error;
     }
 
-    // kid: optional. If present it must be a did
-    // jwk: optional, used instead of kid. 
-    // x5c: optional, used instead of kid. not supported at the moment
-    // trust_chain: optional, OIDFed information
-    let did = header.kid;
-    if (did && did.indexOf('#') > 0) {
-        did = did.substring(0, did.indexOf('#'));
-    }
-    else {
-        // create a did from the key material so we can use it as credentialSubject id
-        // this is a special case for wwwallet, which uses a jwk in the proof and hence
-        // does not have a regular did
-        did = await Factory.toDIDJWK(ckey);
-    }
-
     const payload = jwt.payload;
-    const { iss, aud, iat, nonce } = payload;
+    const { aud, iat, nonce } = payload;
     // in the body:
     // iss: optional, must not be present for pre-auth, contains client_id
     // not testing for this. We could test that it is not present in pre-auth, but who cares
     // we could test that it IS present in auth flow, but it is optional...
 
     // aud: required, credential issuer identifier
-    if (!aud || aud !== issuer.metadata.credential_issuer) {
+    if (!aud || aud !== issuer.options.baseUrl) {
         debug("Proof is invalid because aud claim is incorrect", aud);
         error.error = ErrorCodes.INVALID_REQUEST;
         error.description = "Invalid aud claim";
@@ -295,7 +284,7 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
         }
     }
 
-    if (!did) {
+    if (!holderData?.did) {
         debug("Proof is invalid because we could not find a did");
         error.error = ErrorCodes.INVALID_REQUEST;
         error.description = "No did found";
@@ -303,7 +292,7 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
     }
 
     // return the did of the proof, this is the holder key
-    error.data = {did, nonce, key: ckey};
+    error.data = {nonce, holder: holderData};
     return error;
 }
 

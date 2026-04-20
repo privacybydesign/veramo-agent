@@ -9,7 +9,7 @@ import { loadJsonFiles } from "#root/utils/generic";
 import { getBaseUrl } from "#root/utils/getBaseUrl";
 import fs from 'fs';
 import { getDbConnection } from '#root/database/databaseService';
-import { ContextDocument } from '#root/packages/datastore/entities/ContextDocument';
+import { ContextDocument } from '#root/database/entities/ContextDocument';
 import { hasAdminBearerToken } from '#root/utils/adminBearerToken';
 
 export interface ContextConfiguration {
@@ -99,7 +99,7 @@ class ContextConfigurationStore {
             }
         }
         catch (e) {
-            debug("Missing configuration path");
+            debug("Missing configuration path", e);
         }
     }
 
@@ -159,5 +159,5 @@ class ContextConfigurationStore {
     }
 }
 
-var _contextConfigurationStore: ContextConfigurationStore = new ContextConfigurationStore();
+const _contextConfigurationStore: ContextConfigurationStore = new ContextConfigurationStore();
 export const getContextConfigurationStore = (): ContextConfigurationStore => _contextConfigurationStore;

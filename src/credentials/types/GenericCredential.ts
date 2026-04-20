@@ -17,7 +17,7 @@ export class GenericCredential extends CredentialType
         return true;
     }
 
-    public check(credential:Credential)
+    public check()
     {
         return true;
     }

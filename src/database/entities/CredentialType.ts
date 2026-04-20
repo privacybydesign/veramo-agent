@@ -8,23 +8,20 @@ import {
   BeforeUpdate,
 } from 'typeorm'
 
-@Entity('context_document')
-export class ContextDocument extends BaseEntity {
+@Entity('credential_type')
+@Index(['name'], { unique: true })
+export class CredentialType extends BaseEntity {
     @PrimaryGeneratedColumn('increment')
-    //@ts-ignore
+    //@ts-expect-error has no initializer
     id: number;
 
-    @Column({ type: 'varchar'})
-    // @ts-ignore
-    name: string
-
-    @Column('varchar')
-    // @ts-ignore
-    path: string
-
     @Column('text')
-    // @ts-ignore
-    document: string
+    //@ts-expect-error has no initializer
+    configuration: string
+
+    @Column({ type: 'varchar'})
+    //@ts-expect-error has no initializer
+    name: string
 
     @BeforeInsert()
     setSaveDate() {
@@ -38,10 +35,10 @@ export class ContextDocument extends BaseEntity {
     }
 
     @Column({ type: 'timestamp'})
-    // @ts-ignore
+    //@ts-expect-error has no initializer
     saveDate: Date
 
     @Column({ type: 'timestamp'})
-    // @ts-ignore
+    //@ts-expect-error has no initializer
     updateDate: Date
 }

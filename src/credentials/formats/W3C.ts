@@ -4,6 +4,7 @@ const debug = Debug('issuer:vcdm');
 import { Credential } from '#root/credentials/Credential';
 import moment from 'moment';
 import { W3CJWT, W3C as W3CType } from '#root/credentials/formats/VCDMTypes';
+import { HolderData } from '#root/types/internal';
 
 // https://www.w3.org/TR/vc-data-model/
 
@@ -16,17 +17,17 @@ export class W3C
         this.credential = credential;
     }
 
-    public build():W3CJWT
+    public async build():Promise<W3CJWT>
     {
         debug("creating W3C");
 
         const issuerName = this.getString('issuer_name');
         const issuerDescription = this.getString('issuer_description');
-        let context = (this.credential.contexts ?? []).slice();
+        const context = (this.credential.contexts ?? []).slice();
         if (!context.includes('https://www.w3.org/2018/credentials/v1')) {
             context.unshift('https://www.w3.org/2018/credentials/v1');
         }
-        let baseCredential:W3CType = {
+        const baseCredential:W3CType = {
             // The value of the @context property MUST be an ordered set where the first item is a URI with the value https://www.w3.org/2018/credentials/v1.
             "@context": context,
             type: ["VerifiableCredential", this.credential.type],
@@ -43,7 +44,7 @@ export class W3C
 
         // Each object MAY also contain an id property to identify the subject, as described in Section 4.2 Identifiers.
         if (this.credential.automaticallyBindHolder && !baseCredential.credentialSubject.id && this.credential.holder) {
-            baseCredential.credentialSubject.id = this.credential.holder;
+            baseCredential.credentialSubject.id = await this.convertHolderToDid(this.credential.holder);
         }
 
         if (this.credential.dictionary['name']) {
@@ -54,19 +55,31 @@ export class W3C
         }
 
         if (this.credential.metaData.issuanceDate) {
+            debug('issuanceDate is set to ', this.credential.metaData.issuanceDate);
             baseCredential.issuanceDate = moment(this.credential.metaData.issuanceDate).format('YYYY-MM-DDTHH:mm:ssZ');
         }
         else {
+            debug('no issuance date set, setting to now', this.credential.metaData);
             baseCredential.issuanceDate = moment().format('YYYY-MM-DDTHH:mm:ssZ');
         }
         if (this.credential.metaData.expirationDate) {
             baseCredential.expirationDate = moment(this.credential.metaData.expirationDate).format('YYYY-MM-DDTHH:mm:ssZ');
         }
 
+        this.addOIDFedMetadata(baseCredential, this.credential.issuer?.options.baseUrl);
         this.addStatusListData(baseCredential);
         this.addEvidenceData(baseCredential);
+        this.addOtherMetadata(baseCredential);
 
         return { vc: baseCredential };
+    }
+
+    private async convertHolderToDid(holder:HolderData):Promise<string>
+    {
+        if ((holder.type == "kid" || holder.type == "jwk") && holder.data) {
+            return holder.data;
+        }
+        throw new Error("W3C not applicable for x5c holding JWT proofs");
     }
 
     private getString(value:string)
@@ -82,6 +95,35 @@ export class W3C
         return '';
     }
 
+    private addOIDFedMetadata(baseCredential:W3CType, entity?:string)
+    {
+
+        if (!baseCredential.termsOfUse) {
+            baseCredential.termsOfUse = {
+                "type": "OpenIDFederation",
+                "policyId": entity
+            };
+        }
+        else {
+            if (!Array.isArray(baseCredential.termsOfUse) && baseCredential.termsOfUse.type != 'OpenIDFederation') {
+                baseCredential.termsOfUse = [baseCredential.termsOfUse];
+                baseCredential.termsOfUse.push({
+                    "type": "OpenIDFederation",
+                    "policyId": entity
+                });
+            }
+            else if(Array.isArray(baseCredential.termsOfUse)) {
+                const hasOIDFed = baseCredential.termsOfUse.filter((i) => i.type == 'OpenIDFederation').length  > 0;
+                if (!hasOIDFed) {
+                    baseCredential.termsOfUse.push({
+                        "type": "OpenIDFederation",
+                        "policyId": entity
+                    }); 
+                }
+            }
+        }
+    }
+    
     private addStatusListData(baseCredential:W3CType)
     {
         if (this.credential.metaData.credentialStatus) {
@@ -113,6 +155,34 @@ export class W3C
             else if (this.credential.metaData.evidence.length) {
                 // array of entries
                 baseCredential.evidence = this.credential.metaData.evidence.slice();
+            }
+        }
+    }
+
+    private addOtherMetadata(baseCredential:W3CType)
+    {
+        // this only works on the OpenBadgeCredential, because the other types cannot set other metadata
+        for (const key of Object.keys(this.credential.metaData)) {
+            switch (key) {
+                case 'evidence':
+                case 'credentialStatus':
+                case 'issuanceDate':
+                case 'expirationDate':
+                    // pass
+                    break;
+                case 'issuer':
+                    baseCredential.issuer = Object.assign({}, this.credential.metaData.issuer, baseCredential.issuer);
+                    // make sure our issuer.id is set correctly though
+                    if (typeof(baseCredential.issuer) == 'object') {
+                        baseCredential.issuer.id = this.credential.issuer!.did!.did;
+                    }
+                    else {
+                        baseCredential.issuer = this.credential.issuer!.did!.did;
+                    }
+                    break;
+                default:
+                    baseCredential[key] = this.credential.metaData[key];
+                    break;
             }
         }
     }

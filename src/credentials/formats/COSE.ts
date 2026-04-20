@@ -1,22 +1,20 @@
 import Debug from 'debug';
 const debug = Debug('issuer:jose');
 
-import { VCDM as VCDMType} from '#root/credentials/formats/VCDMTypes';
 import { VCDM } from "#root/credentials/formats/VCDM";
 import { Credential } from '#root/credentials/Credential';
 import moment from 'moment';
 import * as cbor from 'cbor2';
 import { toString } from 'uint8arrays';
+import { Factory } from '@muisit/cryptokey';
 
 export class COSE
 {
     private credential:Credential;
-    private type:string = 'vc+jwt';
 
-    public constructor(credential:Credential, type:string = 'vc+jwt')
+    public constructor(credential:Credential)
     {
         this.credential = credential;
-        this.type = type;
     }
 
     public async sign()
@@ -48,7 +46,7 @@ export class COSE
         if (baseCredential.id) {
             baseCredential.jti = baseCredential.id;
         }
-        if (baseCredential.credentialSubject.id) {
+        if (baseCredential.credentialSubject?.id) {
             baseCredential.sub = baseCredential.credentialSubject.id;
         }
 
@@ -65,7 +63,7 @@ export class COSE
         const unprotectedHeader = {
             typ: 'application/vc+cose',
             cty: 'application/vc',
-            kid: this.credential.issuer!.did!.did + '#' + this.credential.issuer!.keyRef,
+            kid: '#' + Factory.getKeyReference(this.credential.issuer!.did!.did),
             iss: this.credential.issuer!.did!.did
         };
 
