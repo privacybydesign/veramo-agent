@@ -46,7 +46,7 @@
     "tsconfig-paths": "^4.2.0",
     "typeorm": "0.3.28",
     "uint8arrays": "^5.1.0",
-    "uuid": "^11.1.0"
+    "uuid": "^14.0.0"
   },
   "files": [
     "src/**/*",
@@ -79,7 +79,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.57.0",
     "vite-tsconfig-paths": "6.1.1",
-    "vitest": "4.0.18"
+    "vitest": "4.1.0"
   },
   "imports": {
     "#root/*": "./src/*.ts"
