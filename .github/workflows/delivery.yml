@@ -1,17 +1,32 @@
 name: Delivery
 
+# Publishes container images to GitHub Container Registry (ghcr.io).
+#
+# Three flows:
+#   1. Push / merge to main          -> :edge (+ :sha-<commit>)
+#   2. Manual dispatch, no version   -> :edge + :<branch> (+ :sha-<commit>)
+#                                       (pick the branch in the "Run workflow"
+#                                        dropdown, e.g. a PR branch)
+#   3. GitHub release published      -> :<major>.<minor>.<patch> + :<major>.<minor>
+#      OR manual dispatch w/ version -> the entered version (v* or pbdf-v*)
 on:
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Git tag to build and publish (e.g. v1.0.0). Leave empty to build current branch.'
+      version:
+        description: 'Version to release (e.g. v1.0.0 or pbdf-v1.0.0). Leave empty to build an :edge image from the branch selected above.'
         required: false
         type: string
 
+concurrency:
+  group: delivery-${{ github.ref }}-${{ github.event.inputs.version }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
   packages: write
 
 jobs:
@@ -21,7 +36,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          # Manual version build -> check out that tag/ref; otherwise the triggering ref.
+          ref: ${{ github.event.inputs.version || github.ref }}
 
       - name: Docker meta
         id: meta
@@ -29,10 +45,19 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{major}}.{{minor}}.{{patch}}
-            type=match,pattern=v(.*),group=1,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
-            type=match,pattern=pbdf-v(.*),group=1,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' }}
-            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag == '' }}
+            # 1. Push / merge to main -> edge
+            type=edge,branch=main
+            # 2. Manual dispatch without a version -> edge + branch name
+            type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version == '' }}
+            type=ref,event=branch,enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.version == '' }}
+            # 3a. GitHub release -> semver tags derived from the git tag
+            type=semver,pattern={{major}}.{{minor}}.{{patch}},enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ github.event_name == 'release' }}
+            # 3b. Manual dispatch with a version -> that version (v* and pbdf-v* prefixes)
+            type=match,pattern=v(.*),group=1,value=${{ github.event.inputs.version }},enable=${{ github.event.inputs.version != '' }}
+            type=match,pattern=pbdf-v(.*),group=1,value=${{ github.event.inputs.version }},enable=${{ github.event.inputs.version != '' }}
+            # Traceable commit tag on edge builds (push to main / dispatch without version)
+            type=sha,enable=${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.version == '') }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,7 +70,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image to GitHub Container Registry
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
