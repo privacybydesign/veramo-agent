@@ -1,5 +1,5 @@
 import { ExtendableCredentialConfiguration } from "#root/types/api/metadata";
-import { CredentialConfiguration, CredentialConfigurationClaimData, CredentialConfigurationVCDM, CredentialFormat } from "#root/types/specification/metadata";
+import { CredentialConfiguration, CredentialConfigurationClaimData, CredentialConfigurationVCDM } from "#root/types/specification/metadata";
 
 export function convertConfigToVCDM(credentialId:string, config:ExtendableCredentialConfiguration): CredentialConfiguration
 {
