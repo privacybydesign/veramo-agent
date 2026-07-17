@@ -1,0 +1,18 @@
+{
+  "path": "/vct/nl-yivi-supplier",
+  "credentials": ["YiviSupplierSdJwt"],
+  "document": {
+    "name": "Approved supplier",
+    "description": "VCT metadata for Approved supplier",
+    "language": "en",
+    "display": [
+      { "lang": "en", "name": "Approved supplier" },
+      { "lang": "nl", "name": "Erkende leverancier" }
+    ],
+    "claims": [
+      { "path": ["name"], "sd": "allowed" },
+      { "path": ["kvkNumber"], "sd": "allowed" }
+    ],
+    "issuer": "http://localhost:3000/yivi"
+  }
+}
