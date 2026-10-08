@@ -10,8 +10,8 @@ services:
       - "db:db"
       - "log:log"
     volumes:
-      - .src:/app/src:ro
-      - .patches:/app/patches:ro
+      - ./src:/app/src:ro
+      - ./patches:/app/patches:ro
       - /dev/null:/app/.env:ro # Ensure we don't use the host's .env file but set env vars explicitly
       - ./conf:/conf:ro
     environment:
@@ -34,7 +34,7 @@ services:
       - shared-network
 
   db:
-    image: postgres:16-bookworm
+    image: postgres:17-bookworm
     container_name: postgres
     restart: unless-stopped
     environment:
@@ -79,6 +79,6 @@ services:
 
 networks:
   shared-network:
-    external: true
+    driver: bridge
   eduwallet_agent:
     driver: bridge

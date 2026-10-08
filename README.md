@@ -34,7 +34,7 @@ docker run -t -i \
     -v ./database:/var/lib/postgresql/data \
     -v <veramo-agent-path>/scripts/dbinit:/docker-entrypoint-initdb.d \
     -p 5432:5432 \
-    postgres:16-bookworm
+    postgres:17-bookworm
 ```
 
 Make sure to replace the `POSTGRES_PASSWORD` and the `<veramo-agent-path>` with proper values and in general match the vales with the `.env` or `.env.local` configuration.
