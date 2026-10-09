@@ -9,5 +9,6 @@ RUN yarn install
 
 COPY . .
 
-# Run the app when the container launches
-CMD ["yarn", "start:dev"]
+# Run the app when the container launches.
+# (Was "start:dev", a stale leftover; the script was renamed to "start" in cc161e6.)
+CMD ["yarn", "start"]
