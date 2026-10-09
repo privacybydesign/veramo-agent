@@ -1,0 +1,18 @@
+{
+  "path": "/vct/nl-yivi-email",
+  "credentials": ["YiviEmailSdJwt"],
+  "document": {
+    "name": "Corporate e-mail",
+    "description": "VCT metadata for Corporate e-mail",
+    "language": "en",
+    "display": [
+      { "lang": "en", "name": "Corporate e-mail" },
+      { "lang": "nl", "name": "Zakelijk e-mailadres" }
+    ],
+    "claims": [
+      { "path": ["email"], "sd": "allowed" },
+      { "path": ["domain"], "sd": "allowed" }
+    ],
+    "issuer": "http://localhost:3000/yivi"
+  }
+}

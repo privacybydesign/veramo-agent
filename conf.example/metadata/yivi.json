@@ -1,0 +1,103 @@
+{
+  "issuer": "http://localhost:3000/yivi",
+  "credential_issuer": "http://localhost:3000/yivi",
+  "display": [
+    { "name": "Yivi B.V.", "locale": "en" },
+    { "name": "Yivi B.V.", "locale": "nl" }
+  ],
+  "authorization_servers": [],
+  "credential_configurations_supported": {
+    "YiviEmailSdJwt": {
+      "format": "dc+sd-jwt",
+      "scope": "YiviEmailSdJwt",
+      "cryptographic_binding_methods_supported": ["did:jwk"],
+      "credential_signing_alg_values_supported": ["ES256"],
+      "proof_types_supported": {
+        "jwt": { "proof_signing_alg_values_supported": ["ES256"] }
+      },
+      "credential_definition": {
+        "type": ["VerifiableCredential", "YiviEmailSdJwt"],
+        "claims": [
+          { "path": ["email"], "mandatory": true, "display": [{ "name": "E-mail", "locale": "en" }, { "name": "E-mailadres", "locale": "nl" }] },
+          { "path": ["domain"], "display": [{ "name": "Domain", "locale": "en" }, { "name": "Domein", "locale": "nl" }] }
+        ]
+      },
+      "credential_metadata": {
+        "display": [
+          { "name": "Corporate e-mail", "locale": "en" },
+          { "name": "Zakelijk e-mailadres", "locale": "nl" }
+        ],
+        "claims": [
+          { "path": ["email"], "mandatory": true, "display": [{ "name": "E-mail", "locale": "en" }, { "name": "E-mailadres", "locale": "nl" }] },
+          { "path": ["domain"], "display": [{ "name": "Domain", "locale": "en" }, { "name": "Domein", "locale": "nl" }] }
+        ]
+      },
+      "display": [
+        { "name": "Corporate e-mail", "locale": "en" },
+        { "name": "Zakelijk e-mailadres", "locale": "nl" }
+      ]
+    },
+    "YiviEmployeeSdJwt": {
+      "format": "dc+sd-jwt",
+      "scope": "YiviEmployeeSdJwt",
+      "cryptographic_binding_methods_supported": ["did:jwk"],
+      "credential_signing_alg_values_supported": ["ES256"],
+      "proof_types_supported": {
+        "jwt": { "proof_signing_alg_values_supported": ["ES256"] }
+      },
+      "credential_definition": {
+        "type": ["VerifiableCredential", "YiviEmployeeSdJwt"],
+        "claims": [
+          { "path": ["fullName"], "mandatory": true, "display": [{ "name": "Full name", "locale": "en" }, { "name": "Volledige naam", "locale": "nl" }] },
+          { "path": ["department"], "display": [{ "name": "Department", "locale": "en" }, { "name": "Afdeling", "locale": "nl" }] },
+          { "path": ["role"], "display": [{ "name": "Role", "locale": "en" }, { "name": "Functie", "locale": "nl" }] }
+        ]
+      },
+      "credential_metadata": {
+        "display": [
+          { "name": "Employee of Yivi B.V.", "locale": "en" },
+          { "name": "Medewerker van Yivi B.V.", "locale": "nl" }
+        ],
+        "claims": [
+          { "path": ["fullName"], "mandatory": true, "display": [{ "name": "Full name", "locale": "en" }, { "name": "Volledige naam", "locale": "nl" }] },
+          { "path": ["department"], "display": [{ "name": "Department", "locale": "en" }, { "name": "Afdeling", "locale": "nl" }] },
+          { "path": ["role"], "display": [{ "name": "Role", "locale": "en" }, { "name": "Functie", "locale": "nl" }] }
+        ]
+      },
+      "display": [
+        { "name": "Employee of Yivi B.V.", "locale": "en" },
+        { "name": "Medewerker van Yivi B.V.", "locale": "nl" }
+      ]
+    },
+    "YiviSupplierSdJwt": {
+      "format": "dc+sd-jwt",
+      "scope": "YiviSupplierSdJwt",
+      "cryptographic_binding_methods_supported": ["did:jwk"],
+      "credential_signing_alg_values_supported": ["ES256"],
+      "proof_types_supported": {
+        "jwt": { "proof_signing_alg_values_supported": ["ES256"] }
+      },
+      "credential_definition": {
+        "type": ["VerifiableCredential", "YiviSupplierSdJwt"],
+        "claims": [
+          { "path": ["name"], "mandatory": true, "display": [{ "name": "Legal name", "locale": "en" }, { "name": "Statutaire naam", "locale": "nl" }] },
+          { "path": ["kvkNumber"], "display": [{ "name": "KVK number", "locale": "en" }, { "name": "KVK-nummer", "locale": "nl" }] }
+        ]
+      },
+      "credential_metadata": {
+        "display": [
+          { "name": "Approved supplier", "locale": "en" },
+          { "name": "Erkende leverancier", "locale": "nl" }
+        ],
+        "claims": [
+          { "path": ["name"], "mandatory": true, "display": [{ "name": "Legal name", "locale": "en" }, { "name": "Statutaire naam", "locale": "nl" }] },
+          { "path": ["kvkNumber"], "display": [{ "name": "KVK number", "locale": "en" }, { "name": "KVK-nummer", "locale": "nl" }] }
+        ]
+      },
+      "display": [
+        { "name": "Approved supplier", "locale": "en" },
+        { "name": "Erkende leverancier", "locale": "nl" }
+      ]
+    }
+  }
+}

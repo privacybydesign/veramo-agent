@@ -1,0 +1,7 @@
+{
+  "name": "yivi",
+  "baseUrl": "http://localhost:3000/yivi",
+  "adminToken": "local-dev-token",
+  "did": "yivi-did",
+  "usesNonces": true
+}

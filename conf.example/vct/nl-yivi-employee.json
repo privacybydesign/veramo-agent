@@ -1,0 +1,19 @@
+{
+  "path": "/vct/nl-yivi-employee",
+  "credentials": ["YiviEmployeeSdJwt"],
+  "document": {
+    "name": "Employee of Yivi B.V.",
+    "description": "VCT metadata for Employee of Yivi B.V.",
+    "language": "en",
+    "display": [
+      { "lang": "en", "name": "Employee of Yivi B.V." },
+      { "lang": "nl", "name": "Medewerker van Yivi B.V." }
+    ],
+    "claims": [
+      { "path": ["fullName"], "sd": "allowed" },
+      { "path": ["department"], "sd": "allowed" },
+      { "path": ["role"], "sd": "allowed" }
+    ],
+    "issuer": "http://localhost:3000/yivi"
+  }
+}
