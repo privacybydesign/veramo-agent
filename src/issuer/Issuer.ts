@@ -3,7 +3,7 @@ const debug = Debug('issuer:issuer');
 
 import moment from "moment";
 import { Router } from "express";
-import { StatusList, StatusListIETF, StatusListW3C } from "#root/types/internal/statuslists";
+import { StatusListCredentialData, StatusListOptions } from "#root/types/internal/statuslists";
 import { StatusListRevocationState } from '#root/types/api';
 import { IssuerConfiguration } from '#root/types/internal';
 import { JWT } from '#root/jwt/JWT';
@@ -24,7 +24,9 @@ import { NonceManager } from '#root/utils/NonceManager';
 import { getDIDConfigurationStore } from '#root/dids/Store';
 import { retrieveServerMetadata } from './lib/retrieveServerMetadata.js';
 import { convertConfigToVCDM } from './lib/convertConfigToVCDM.js';
-import { convertConfigToSDJWT } from './lib/convertConfigToSDJWT.js';
+import { convertConfigToDCSDJWT, convertConfigToVCSDJWT } from './lib/convertConfigToSDJWT.js';
+import { StatusListType } from '#root/statusLists/StatusListType';
+import { MAX_BATCH_SIZE } from '#root/environment';
 
 export class Issuer
 {
@@ -37,6 +39,8 @@ export class Issuer
     public router:Router|undefined;
     public sessionData:SessionStateManager;
     public nonceStates:NonceManager;
+    public dpopNonceStates:NonceManager;
+    public dpopJtiStates:NonceManager;
     public serverKeys:StringKeyedObject;
     public serverMetadata:any;
     public usesNonces:boolean;
@@ -49,13 +53,30 @@ export class Issuer
         this.name = _options.name;
         this.sessionData = new SessionStateManager(this.name);
         this.nonceStates = new NonceManager(this.name);
+        this.dpopNonceStates = new NonceManager(this.name + '#dpop-nonce');
+        this.dpopJtiStates = new NonceManager(this.name + '#dpop-jti');
         this.serverKeys = {};
         this.usesNonces = _options.usesNonces ?? true;
+    }
+
+    public basePath(): string
+    {
+        return '/' + this.name;
     }
 
     public algorithm():string
     {
         return this.key?.algorithms()[0] || 'EdDSA';
+    }
+
+    public usesAuthorisedCodeFlow()
+    {
+        return this.options.authorizationEndpoint && this.options.authorizationEndpoint.length;
+    }
+
+    public async exportJWK()
+    {
+        return this.key!.toJWK();
     }
 
     public async setDid()
@@ -90,7 +111,7 @@ export class Issuer
 
     public async retrieveASUserInfo(token:string)
     {
-        this.retrieveASServerKeys();
+        await this.retrieveASServerKeys();
         const endpoint = this.serverMetadata?.userinfo_endpoint;
         try {
             const json = await fetch(endpoint, {
@@ -108,11 +129,14 @@ export class Issuer
 
     public async retrieveASIssuerIntrospection(token:string)
     {
-        this.retrieveASServerKeys();
+        debug("retrieving AS Authorization Introspection");
+        await this.retrieveASServerKeys();
         const endpoint = this.serverMetadata?.authorization_introspection_endpoint;
+        debug("endpoint is ", endpoint);
         try {
             // the client secret contains the clientId + ':' + clientSecret, allowing us to use the clientId as the id sent to the wallet for use
             // use the Buffer route here instead of toString(fromString(x,'utf-8'),'base64') because that results in missing padding
+            debug("adding client secret as base64 Basic Auth header", this.options.clientSecret);
             const basicauth = Buffer.from(this.options.clientSecret ?? '', 'utf-8').toString('base64');
             const resp = await fetch(endpoint, {
                 method: 'POST',
@@ -124,11 +148,18 @@ export class Issuer
                     'access-token': token
                 })
             });
-            const json = await resp.json();
-            return json;
+            const responseText = await resp.text();
+            debug("response is ", resp.status, resp.statusText, responseText);
+            try {
+                const json = JSON.parse(responseText);  
+                return json;
+            }
+            catch (e:any) {
+                debug("caught error parsing the response text to JSON", e);
+            }
         }
         catch (e:any) {
-            console.error("Caught error retrieving the user info endpoint", endpoint, token, e)
+            console.error("Caught error retrieving the authorisation introspection endpoint", endpoint, token, e)
         }
         return {};
     }
@@ -229,12 +260,7 @@ export class Issuer
         dbCred.metadata = this.getCredentialConfiguration(credential.type) as StringKeyedObject;
         dbCred.credentialId = credential.type || '';
         if (credential.metaData.credentialStatus) {
-            if (!Array.isArray(credential.metaData.credentialStatus)) {
-                dbCred.statuslists = [credential.metaData.credentialStatus];
-            }
-            else {
-                dbCred.statuslists = credential.metaData.credentialStatus;
-            }
+            dbCred.statuslists = credential.metaData.credentialStatus;
         }
         dbCred.status='ISSUED'; // initial status
         await repo.save(dbCred);
@@ -269,7 +295,7 @@ export class Issuer
         return await Factory.toDIDDocument(this.key!, this.did?.did, services, "JsonWebKey2020"); // Sphereon requires the deprecated JsonWebKey2020 verification-method
     }
 
-    public hasCredentialConfiguration(name:string):boolean|ExtendableCredentialConfiguration {
+    public hasCredentialConfiguration(name:string):false|ExtendableCredentialConfiguration {
         if (!name || typeof(name) != 'string' || name == '') {
             return false;
         }
@@ -290,13 +316,10 @@ export class Issuer
         return false;
     }
 
-    public getCredentialConfiguration(id:string, decorate:boolean = true): CredentialConfiguration|null {
-        let credential:any = this.hasCredentialConfiguration(id);
+    public getCredentialConfiguration(id:string): ExtendableCredentialConfiguration|null {
+        const credential = this.hasCredentialConfiguration(id);
         if (credential !== false) {
-            if (decorate) {
-                credential = this.decorateCredentialConfiguration(id, credential as ExtendableCredentialConfiguration);
-            }
-            return credential;
+            return this.decorateCredentialConfiguration(id, credential as ExtendableCredentialConfiguration, false) as ExtendableCredentialConfiguration;
         }
         return null;
     }
@@ -323,7 +346,7 @@ export class Issuer
     public generateMetadata() {
         const metadata:Metadata = Object.assign({}, this.metadata) as Metadata;
         const credentials:CredentialConfigurations = {};
-        for (const id of Object.keys(this.metadata.credential_configurations_supported)) {
+        for (const id of Object.keys(this.metadata.credential_configurations_supported || {})) {
             const credentialConfiguration = this.decorateCredentialConfiguration(id, this.metadata.credential_configurations_supported[id]);
             credentials[id] = credentialConfiguration;
         }
@@ -331,9 +354,13 @@ export class Issuer
         metadata.credential_identifiers_supported = true;
         metadata.credential_issuer = this.options.baseUrl;
         metadata.credential_endpoint = this.options.baseUrl + '/credentials';
+        metadata.notification_endpoint = this.options.baseUrl + '/notification';
         if (this.usesNonces) {
             metadata.nonce_endpoint = this.options.baseUrl + '/nonce';
         }
+        // disabled: wallets (e.g. Paradym) that see batch_credential_issuance request a batch of keys
+        // and fail in getCredentialRequestOptions before sending the credential request
+        //metadata.batch_credential_issuance = { batch_size: MAX_BATCH_SIZE };
         // leftover from older configurations: we do not support additional encryption at this point
         if (metadata.credential_response_encryption) {
             delete metadata.credential_response_encryption;
@@ -361,7 +388,8 @@ export class Issuer
      * for this credential. 
      * If required, convert this from vc_jwt to vc+sw-jwt configuration.
      */
-    private decorateCredentialConfiguration(credentialId:string, overriddenConfiguration:ExtendableCredentialConfiguration):CredentialConfiguration {
+    private decorateCredentialConfiguration(credentialId:string, overriddenConfiguration:ExtendableCredentialConfiguration, convert:boolean = true)
+        :CredentialConfiguration|ExtendableCredentialConfiguration {
         const store = getCredentialConfigurationStore();
 
         // allow the override configuration to specify which credential id it is explicitely overriding
@@ -374,9 +402,8 @@ export class Issuer
             store[credentialId] ?? {},
             overriddenConfiguration);
 
-        // remove extension mechanism from ExtendableCredentialConfiguration
-        if ((decoratedCredential as ExtendableCredentialConfiguration).extends) {
-            delete (decoratedCredential as ExtendableCredentialConfiguration).extends;
+        if (!convert) {
+            return decoratedCredential;
         }
 
         let resultCredential:CredentialConfiguration;
@@ -389,8 +416,10 @@ export class Issuer
                 resultCredential = convertConfigToVCDM(credentialId, decoratedCredential);
                 break;
             case 'vc+sd-jwt':
+                resultCredential = convertConfigToVCSDJWT(credentialId, decoratedCredential);
+                break;
             case 'dc+sd-jwt':
-                resultCredential = convertConfigToSDJWT(credentialId, decoratedCredential);
+                resultCredential = convertConfigToDCSDJWT(credentialId, decoratedCredential);
                 break;
         }
 
@@ -435,7 +464,11 @@ export class Issuer
         debug("revoking specific credential " + uuid);
         const dbConnection = await getDbConnection();
         const repo = dbConnection.getRepository(CredentialEntity);
-        const credential = await repo.findOneBy({uuid});
+        // uuid is globally unique across all tenants, so without the issuer predicate
+        // any tenant's admin could revoke/unrevoke any other tenant's credential just
+        // by knowing its uuid (which is not treated as a secret: it shows up in
+        // list-credentials/check-offer responses and the status list linkage)
+        const credential = await repo.findOneBy({uuid, issuer: this.name});
         if (!credential) {
             debug("credential not found in database");
             throw new Error("No such credential");
@@ -446,19 +479,18 @@ export class Issuer
         }
 
         let retval:StatusListRevocationState = StatusListRevocationState.UNKNOWN;
-        // we should have store this as an array, but you never know with these specs...
-        const statuslists = Array.isArray(credential.statuslists) ? credential.statuslists : [credential.statuslists];
-
+        const statuslists:StatusListCredentialData[] = credential.statuslists as StatusListCredentialData[];
         debug("looping over " + statuslists.length + " statuslists");
-        for (const statlist of statuslists) {
-            if (!listName || statlist.credentialStatus?.id?.startsWith(listName)) {
+        for (const statlistdata of statuslists) {
+            const statlist = new StatusListType(statlistdata.options, this);
+            if (!listName || statlist.id.startsWith(listName)) {
                 // if we are only revoking, only call on the lists with purpose revocation
                 // this allows us to explicitely suspend credentials
                 // TODO: if we only suspend, this implementation still returns REVOKED and stores it
                 // as such on the credential. We need to implement the additional features of the
                 // remote status list and its messages
                 if (!onlyRevoke || !statlist.purpose || statlist.purpose == 'revocation') {
-                    retval = this.mergeStatusListStates(retval, await this.revokeCredentialFromList(credential, statlist, doRevoke));
+                    retval = this.mergeStatusListStates(retval, await this.revokeCredentialFromList(statlist, statlistdata, doRevoke));
                 }
             }
         }
@@ -483,62 +515,48 @@ export class Issuer
         return oldState;
     }
 
-    private async revokeCredentialFromList(credential:CredentialEntity, statlist:StatusList, doRevoke: boolean): Promise<StatusListRevocationState>
+    private async revokeCredentialFromList(statlist:StatusListType, statlistdata:StatusListCredentialData, doRevoke: boolean): Promise<StatusListRevocationState>
     {
-        debug("revoking credential of type " + credential.credentialId);
-        let slists = this.options.statusLists![credential.credentialId];
-        if (slists) {
-            // make sure it is an array
-            if (!Array.isArray(slists)) slists=[slists];
-            for (const slist of slists) {
-                // if we actually have a revoke interface, revoke it
-                // TODO: perhaps create other interfaces/services for suspend/message/etc
-                if (slist.url == statlist.uri && slist.revoke) {
-                    debug("invoking " + slist.revoke + " with " + statlist + ' and request to ' + (doRevoke ? 'revoke' : 'unrevoke'));
-                    try {
-                        const listuri = statlist.type == 'statuslist+jwt' ? (statlist.credentialStatus as StatusListIETF).uri : (statlist.credentialStatus as StatusListW3C).statusListCredential
-                        const returnValue:any = await fetch(slist.revoke, {
-                            method: 'POST',
-                            body: JSON.stringify({
-                                list: listuri,
-                                index: statlist.index,
-                                status: doRevoke ? 'revoke' : 'unrevoke'
-                            }),
-                            headers: {
-                                'Content-type': 'application/json',
-                                'Authorization': 'Bearer ' + slist.token,
-                            }
-                        }).then((r) => r.json());
-                        debug("return value is " + JSON.stringify(returnValue));
+        // assume that the lists originally present on this credential are still available.
+        // They may not be configured anymore in the current configuration though, so
+        // we should NOT find the configuration and determine the list from there
+        const retval = await statlist.revoke(statlistdata.listIndex, statlistdata.index, doRevoke);
+        switch (retval) {
+            case 'REVOKED':
+                return StatusListRevocationState.REVOKED;
+            case 'UNREVOKED':
+                return StatusListRevocationState.UNREVOKED;
+            case 'UNCHANGED':
+                return doRevoke ? StatusListRevocationState.WAS_REVOKED : StatusListRevocationState.WAS_UNREVOKED;
+            default:
+                return StatusListRevocationState.UNKNOWN;
+        }
+    }
 
-                        // an error in the call will cause an exception which is caught upstairs
-                        switch (returnValue.status) {
-                            case 'REVOKED': return StatusListRevocationState.REVOKED;
-                            case 'UNREVOKED': return StatusListRevocationState.UNREVOKED;
-                            case 'UNCHANGED': return doRevoke ? StatusListRevocationState.WAS_REVOKED : StatusListRevocationState.WAS_UNREVOKED;
-                            default: return StatusListRevocationState.UNKNOWN;
-                        }
-                    }
-                    catch (e) {
-                        debug("caught exception ", e, " on revocation");
-                    }
+    public async reserveOnStatusList(statlist:StatusListOptions, expiry:Date|undefined): Promise<StatusListCredentialData>
+    {
+        const statuslistType = new StatusListType(statlist, this);
+        const listAndIndex = await statuslistType.newIndex(expiry);
+        const credValue = statuslistType.indexAsCredential(listAndIndex.list, listAndIndex.index);
+        return {
+            attribute: credValue,
+            listIndex: listAndIndex.list.index,
+            index: listAndIndex.index,
+            options: statlist
+        };
+    }
+
+    public findAllStatusLists()
+    {
+        const statlistoptions:StatusListOptions[] = [];
+        for (const credentialId of Object.keys(this.metadata.credential_configurations_supported)) {
+            const config = this.metadata.credential_configurations_supported[credentialId];
+            if (config.statuslist) {
+                for (const slo of config.statuslist) {
+                    statlistoptions.push(slo);
                 }
             }
         }
-        else {
-            // else we ignore a statuslist that is no longer configured
-            debug("no status list associated with this credential type in the configuration (anymore). Ignoring request");
-        }
-        return StatusListRevocationState.UNKNOWN;
-    }
-
-    public usesAuthorisedCodeFlow()
-    {
-        return this.options.authorizationEndpoint && this.options.authorizationEndpoint.length;
-    }
-
-    public async exportJWK()
-    {
-        return this.key!.toJWK();
+        return statlistoptions;
     }
 }

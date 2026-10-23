@@ -3,20 +3,9 @@ import { CredentialConfiguration, CredentialConfigurationClaimData, CredentialCo
 
 export function convertConfigToVCDM(credentialId:string, config:ExtendableCredentialConfiguration): CredentialConfiguration
 {
-    let format:CredentialFormat = 'jwt_vc_json';
-    switch (config.format) {
-        default:
-        case 'jwt_vc_json':
-        case 'vc+jwt':
-            format = 'jwt_vc_json';
-            break;
-        case 'jwt_vc_json-ld':
-        case 'ldp_vc':
-            format = config.format;
-            break;
-    }
+    const claims = (config?.credential_definition.claims ?? []).filter((c) => (c.value_type !== 'internal'));
     const vcdm:CredentialConfigurationVCDM = {
-        format,
+        format: config.format,
         // skip credential_signing_algs_supported, it is added in the issuer
         // skip cryptographic_binding_methods_supported, it is added in the issuer
         // skip proof_types_supported, it is added in the issuer
@@ -26,7 +15,7 @@ export function convertConfigToVCDM(credentialId:string, config:ExtendableCreden
         },
         credential_metadata: {
             ...(config.display && {display: config.display}),
-            claims: config?.credential_definition.claims ?? []
+            claims
         }
     }
 
@@ -36,7 +25,11 @@ export function convertConfigToVCDM(credentialId:string, config:ExtendableCreden
 
     for (const key of Object.keys(config?.credential_definition?.credentialSubject ?? {})) {
         const value = config.credential_definition.credentialSubject![key];
+        if (value.value_type == 'internal') {
+            continue;
+        }
         // at this point we only support simple claims: single path elements
+        // for more complicated claims, populate the claims attribute directly
         let path = [key];
         if (config.format == 'jwt_vc_json') {
             // old skool VCDM 1.0, which puts the credential in a vc top claim
@@ -53,6 +46,7 @@ export function convertConfigToVCDM(credentialId:string, config:ExtendableCreden
         };
         vcdm.credential_metadata!.claims!.push(claim);
     }
+
     return vcdm as CredentialConfiguration;    
 }
 

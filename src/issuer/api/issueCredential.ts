@@ -14,17 +14,6 @@ export async function issueCredential(issuer:Issuer, proofData:CredentialProofDa
     const { session } = proofData;
     session.data.lastUpdatedAt = +new Date()
 
-    let nonce:Nonce|null = null;
-    if (issuer.usesNonces) {
-        // remove the old nonce and create a new one
-        for (const proof of proofData.proofResults) {
-            await issuer.nonceStates.clear(proof.nonce);
-        }
-        // TODO: DIIPv4 compliance: remove generating the following nonce
-        debug("creating a new nonce");
-        nonce = await issuer.nonceStates.get('', {session: session.uuid});
-    }
-
     const credentials:Credential[] = [];
     for(const proof of proofData.proofResults) {
         const credential = new Credential();
@@ -66,15 +55,12 @@ export async function issueCredential(issuer:Issuer, proofData:CredentialProofDa
     await issuer.storeSession(session);
 
     const retval = {
-        // TODO: ID2/v15 supports the use of the 'credentials' plural output, so we can remove this
-        credential: credentials[0].output,
         // spec ID-1: 8.3 credential response: Contains an array of one or more issued Credentials.
         // This specification defines the following parameters to be used inside this object:
         // credential: REQUIRED. Contains one issued Credential. 
         credentials: credentials.map((c) => { return {"credential": c.output}}),
-        // in ID2, nonces are retrieved from a nonce endpoint
-        // TODO: DIIPv4 compliance: remove the next line
-        ...((issuer.usesNonces && nonce)? {c_nonce: nonce!.uuid} : {})
+        // used by the notification endpoint to correlate a notification back to this session
+        notification_id: session.uuid,
     };
     debug("returning credential", retval);
     return retval;
