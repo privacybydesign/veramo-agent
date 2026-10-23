@@ -8,7 +8,7 @@ import { Credential } from '../../Credential';
 test('VCDM conversion', async () => {
     const issuer = new Issuer({}, {});
     let dataToSign:any = null; 
-    vi.spyOn(issuer, 'signData').mockImplementation(async (arg:Uint8Array):string => {
+    vi.spyOn(issuer, 'signData').mockImplementation(async function(arg:Uint8Array):Promise<string> {
         dataToSign = arg;
         return 'mocked-signature';
     });
@@ -36,7 +36,7 @@ test('VCDM conversion', async () => {
 
     //const expected = {"@context":["https://www.w3.org/ns/credentials/v2"],"type":["VerifiableCredential","CredentialTest"],"credentialSubject":{"name":"Test","id":"did:test:holder"},"issuer":{"id":"did:test:me","name":[{"@value":"Name","@language":"en_US"},{"@value":"Naam","@language":"nl_NL"}],"description":[{"@value":"Descr","@language":"en_US"}]},"name":[{"@value":"TestCredential","@language":"en_US"},{"@value":"TestDingetje","@language":"nl_NL"}],"description":[{"@value":"Beschrijving","@language":"nl_NL"}],"validFrom":"2025-01-01T01:01:01+01:00"};
     // due to Sphereon and Unime not supporting language objects, we use basic strings
-    const expected = {"@context":["https://www.w3.org/ns/credentials/v2"],"type":["VerifiableCredential","CredentialTest"],"credentialSubject":{"name":"Test","id":"did:test:holder"},"issuer":{"id":"did:test:me","name":"Name","description":"Descr"},"name":"TestCredential","description":"Beschrijving","validFrom":"2025-01-01T01:01:01+01:00"};
+    const expected = {"@context":["https://www.w3.org/ns/credentials/v2"],"type":["VerifiableCredential","CredentialTest"],"credentialSubject":{"name":"Test","id":"did:test:holder#0"},"issuer":{"id":"did:test:me","name":"Name","description":"Descr"},"name":"TestCredential","description":"Beschrijving","validFrom":"2025-01-01T01:01:01+01:00"};
     expect(result).toStrictEqual(expected);
     expect(dataToSign).toBe(null); // signing not called
 });
@@ -87,7 +87,7 @@ test('VCDM holder binding', async () => {
     credential.holder = {type:'kid', did:'did:test:holder', data:'did:test:holder#0'};
     result = await vcdm.build();
     expect(result).toBeDefined();
-    expect(result.credentialSubject.id).toBe('did:test:holder');
+    expect(result.credentialSubject.id).toBe('did:test:holder#0');
 
     credential.automaticallyBindHolder = false;
     result = await vcdm.build();
@@ -107,7 +107,7 @@ test('VCDM holder binding', async () => {
 
 test('VCDM status lists', async () => {
     const issuer = new Issuer({}, {});
-      
+
     const credential = new Credential();
     credential.issuer = issuer;
     credential.type = 'CredentialTest';
@@ -115,17 +115,22 @@ test('VCDM status lists', async () => {
     issuer.did = {did: 'did:test:me'};
     issuer.keyRef = '1234';
 
-    // single status list is converted to array of length 1, which is allowed in the spec
-    // but was explicitely ruled out in DIIPv2 in the early StatusList implementations
-    credential.metaData.credentialStatus = {type:'BitstringStatusList', credentialStatus:{type: 'a'}};
+    // a single surviving entry is unwrapped from the array to a bare object
+    credential.metaData.credentialStatus = [
+        {options: {type:'BitstringStatusList'}, attribute: {type: 'a'}},
+    ];
     const vcdm = new VCDM(credential);
     let result = await vcdm.build();
     expect(result).toBeDefined();
     expect(result.credentialStatus).toBeDefined();
-    expect(result.credentialStatus!.length).toBe(1);
-    expect(result.credentialStatus![0].type).toBe('a');
+    expect(Array.isArray(result.credentialStatus)).toBe(false);
+    expect((result.credentialStatus as any).type).toBe('a');
 
-    credential.metaData.credentialStatus = [{type:'BitstringStatusList',credentialStatus:{type:'a'}},{type:'RevocationList2021',credentialStatus:{type:'b'}}];
+    // multiple surviving entries stay an array
+    credential.metaData.credentialStatus = [
+        {options: {type:'BitstringStatusList'}, attribute: {type:'a'}},
+        {options: {type:'RevocationList2021'}, attribute: {type:'b'}},
+    ];
     result = await vcdm.build();
     expect(result).toBeDefined();
     expect(result.credentialStatus).toBeDefined();
@@ -133,13 +138,16 @@ test('VCDM status lists', async () => {
     expect(result.credentialStatus![0].type).toBe('a');
     expect(result.credentialStatus![1].type).toBe('b');
 
-    // statuslist+jwt is filtered out
-    credential.metaData.credentialStatus = [{type:'BitstringStatusList',credentialStatus:{type:'a'}},{type:'statuslist+jwt',credentialStatus:{type:'b'}}];
+    // entries of the IETF statuslist+jwt variant are filtered out
+    credential.metaData.credentialStatus = [
+        {options: {type:'BitstringStatusList'}, attribute: {type:'a'}},
+        {options: {type:'statuslist+jwt'}, attribute: {type:'b'}},
+    ];
     result = await vcdm.build();
     expect(result).toBeDefined();
     expect(result.credentialStatus).toBeDefined();
-    expect(result.credentialStatus!.length).toBe(1);
-    expect(result.credentialStatus![0].type).toBe('a');
+    expect(Array.isArray(result.credentialStatus)).toBe(false);
+    expect((result.credentialStatus as any).type).toBe('a');
 });
 
 test('VCDM evidence', async () => {

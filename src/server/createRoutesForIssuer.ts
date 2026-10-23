@@ -16,8 +16,15 @@ import {
     listCredentials,
     revokeCredential,
     getNonce,
+    notification,
 } from './endpoints/index.js'
 import { getOIDFed } from './endpoints/getOIDFed.js';
+import { revokeIndex } from './endpoints/statuslists/revokeIndex.js';
+import { getStatus } from './endpoints/statuslists/getStatus.js';
+import { setStatus } from './endpoints/statuslists/setStatus.js';
+import { getStatusListCredential } from './endpoints/statuslists/getStatusListCredential.js';
+import { isSingleTenant } from '#root/utils/isSingleTenant';
+import { adminAuthRateLimiter } from './rateLimiters.js';
 
 export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnownRouter:Router) {
     // to support internal redirections, we set up the routes on <base-url>/<tenant>/...
@@ -25,7 +32,7 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
     // The following statement makes it possible to set issuer.options.baseUrl == <app-baseUrl>/<tenant>
     // and not use the redirections.
     // However, for this to work, the name and the baseUrl should match in the configuration
-    const basePath = '/' + issuer.name;
+    const basePath = isSingleTenant() ? '/' : issuer.basePath();
     const tokenPath = '/token';
 
     debug('creating routes for ', issuer.name);
@@ -36,8 +43,15 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
      * a further metadata field that contains the metadata 'following the specs'
      */
     debug("initializing rest api using ", issuer.options);
-    issuer.router = express.Router();
+    // if this is a single-tenant configuration, use the 'wellKnownRouter' parameter, which is actually the rootRouter
+    issuer.router = isSingleTenant() ? wellKnownRouter : express.Router();
     app.use(basePath, issuer.router);
+
+    // all of this issuer's bearer-admin-protected back channel endpoints live under
+    // /api (create-offer, check-offer, list/revoke-credentials, status list admin);
+    // the public endpoints (token, credentials, nonce, get-credential-offer/:id,
+    // sl/<name>) live outside that prefix and are unaffected by this
+    issuer.router!.use('/api', adminAuthRateLimiter);
 
     // OAuth endpoint to handle the consumation of an authorization (pre-authorized) token
     debug("adding token path");
@@ -49,7 +63,7 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
     }
   
     // This endpoint serves the /.well-known/openid-credential-issuer document
-    getMetadata(issuer, basePath, wellKnownRouter)
+    getMetadata(issuer, basePath, isSingleTenant() ? null : wellKnownRouter)
 
     // Serving the /.well-known/openid-federation document
     getOIDFed(issuer);
@@ -59,17 +73,19 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
         getDidSpec(issuer);
     }
   
-    // This endpoint serves the /.well-known/openid-configuration document
-    // only required if we act as AS
-    if (!issuer.usesAuthorisedCodeFlow()) {
-        // the tokenpath is an external URL, so gets prepended with the baseUrl, but not the basePath
-        getOpenidConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, wellKnownRouter);
-        getOAuthConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, wellKnownRouter);
-    }
+    // This endpoint serves the /.well-known/openid-configuration document.
+    // Always published: even when an external AS is configured for the authorization_code
+    // flow, we may still act as our own AS for pre-authorized_code flow sessions.
+    // the tokenpath is an external URL, so gets prepended with the baseUrl, but not the basePath
+    getOpenidConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
+    getOAuthConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
   
     // this is hard coded in the Issuer when metadata is generated
     getCredential(issuer, '/credentials');
-  
+
+    // this is hard coded in the Issuer when metadata is generated
+    notification(issuer, '/notification');
+
     // Enable the back channel interface to create a new credential offer
     createCredentialOfferResponse(issuer, '/api/create-offer', '/get-credential-offer');
   
@@ -84,5 +100,18 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
 
     // allow the front-end issuer to revoke or unrevoke specific credentials based on an id
     revokeCredential(issuer, '/api/revoke-credential');
-}
 
+    const statusListOptions = issuer.findAllStatusLists();
+    for (const slo of statusListOptions) {
+        // add api interfaces to revoke specific indexes of a named status list
+        revokeIndex(issuer, slo, `/api/sl/${slo.name}/revoke`);
+
+        // Add endpoint to get and set the status
+        getStatus(issuer, slo, `/api/sl/${slo.name}/status`);
+        setStatus(issuer, slo, `/api/sl/${slo.name}/status`);
+
+        // get the statuslist credential, entry point for each status list
+        // this path has to match the path in the StatusListType.id
+        getStatusListCredential(issuer, slo, `/sl/${slo.name}`);
+    }
+}

@@ -6,14 +6,18 @@ import { SDJwtVcInstance, SdJwtVcPayload } from '@sd-jwt/sd-jwt-vc'
 import { DisclosureFrame, Signer } from '@sd-jwt/types'
 import { digest, generateSalt } from '@sd-jwt/crypto-nodejs';
 import { getVctForCredentialType } from "#root/vct/Store";
+import { getLocalVctIntegrity, getRemoteVctWithIntegrity } from "#root/vct/Integrity";
 import { VctClaimPathElement } from "#root/types/specification/vct";
 import { fromString } from 'uint8arrays';
 import moment from 'moment';
 import { Factory } from '@muisit/cryptokey';
+import { VCDM } from './VCDM.js';
+import { StatusListCredentialAttribute, StatusListCredentialAttributeIETF, StatusListCredentialData } from '#root/types/internal/statuslists';
 
 export class SDJWT
 {
     private credential:Credential;
+    private baseCredential:any;
     private type:string = 'dc+sd-jwt';
     public constructor(credential:Credential, type:string = 'dc+sd-jwt')
     {
@@ -21,17 +25,59 @@ export class SDJWT
         this.type = type;
     }
 
+    public async build()
+    {
+        if (this.type == 'dc+sd-jwt') {
+            this.baseCredential = this.credential.data;
+        }
+        else {
+            const cred = new VCDM(this.credential);
+            this.baseCredential = await cred.build();
+        }
+    }
+
     public async sign()
     {
         debug("signing SD JWT");
-        const vct = getVctForCredentialType(this.credential.type!);
 
         const baseCredential:SdJwtVcPayload = {
             iss: this.credential.issuer!.did!.did,
-            vct: vct!.vct!,
             fed: this.credential.issuer?.options.baseUrl,
             iat: moment().unix()
         };
+
+        let vct:any = null;
+        let vctIntegrity:string|null = null;
+        if (this.type == 'dc+sd-jwt') {
+            debug("setting vct");
+            if (this.credential?.configuration?.vct) {
+                debug("getting vct based on configured value");
+                const remote = await getRemoteVctWithIntegrity(this.credential.configuration.vct);
+                if (remote) {
+                    vct = remote.vct;
+                    vctIntegrity = remote.integrity;
+                }
+                debug("remote vct is ", vct);
+            }
+            else {
+                debug("using locally stored vct");
+                vct = getVctForCredentialType(this.credential.type!);
+                if (vct) {
+                    vctIntegrity = getLocalVctIntegrity(vct);
+                }
+            }
+            if (vct) {
+                debug("setting credential vct to ", vct.vct);
+                baseCredential.vct = vct.vct;
+                if (vctIntegrity) {
+                    (baseCredential as any)['vct#integrity'] = vctIntegrity;
+                }
+            }
+            else {
+                debug("dc+sd-jwt has NO VCT set");
+            }
+        }
+
         if (this.credential.automaticallyBindHolder && this.credential.holder) {
             // https://www.rfc-editor.org/rfc/rfc7800.html
             if (this.credential.holder.type == "kid") {
@@ -49,9 +95,9 @@ export class SDJWT
         }
 
         // if we have a credentialSubject, convert it to claims
-        if (this.credential.data) {
-            Object.keys(this.credential.data).forEach((k) => {
-                baseCredential[k] = this.credential.data![k];
+        if (this.baseCredential) {
+            Object.keys(this.baseCredential).forEach((k) => {
+                baseCredential[k] = this.baseCredential![k];
             });
         }
 
@@ -60,8 +106,6 @@ export class SDJWT
         }
         this.addStatusListData(baseCredential);
 
-        // TODO: encode the baseCredential.status referring to the status list implementation
-        // the spec does not define this explicitely
         const signer: Signer = async (data: string): Promise<string> => {
             return await this.credential.issuer!.key!.sign(this.credential.issuer!.algorithm(), fromString(data, 'utf-8'), 'base64url')
         }
@@ -123,16 +167,13 @@ export class SDJWT
     // add the status-list data for IETF token lists.
     private addStatusListData(baseCredential:SdJwtVcPayload)
     {
+        // status list data should _always_ be added by the issuer, never by passing prefabricated data.
+        // Hence we can be more or less sure of the constitution of the data at this point. It should contain
+        // ready to consume StatusListCredentialAttributes
         if (this.credential.metaData.credentialStatus) {
-            let statusses:any = [];
-
-            if (this.credential.metaData.credentialStatus.type) {
-                statusses = [this.credential.metaData.credentialStatus];
-            }
-            else {
-                statusses = this.credential.metaData.credentialStatus;
-            }
-            
+            // array of entries
+            const statusses:StatusListCredentialData[] = this.credential.metaData.credentialStatus;
+           
             // as opposed to the JOSE implementation, we retain all the available
             // status lists and add them as entries here.
             // However, the IETF spec only allows a single status list. We take the first
@@ -143,7 +184,9 @@ export class SDJWT
                 // as a status_list entry, no matter the encoding.
                 // The statuslist agent returns a ready to use return value
                 baseCredential.status = {
-                    status_list: statusses[0].credentialStatus
+                    // we cast here to pass the type check, but if it were a BitstringStatusList, it'd be fine
+                    // this is very much use case driven, so application defined
+                    status_list: statusses[0].attribute as StatusListCredentialAttributeIETF
                 };
             }
         }

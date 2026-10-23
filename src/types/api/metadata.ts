@@ -1,4 +1,5 @@
-import { CredentialConfigurationClaimData, CredentialFormat, Metadata, SupportedProofTypes } from "#root/types/specification/metadata";
+import { CredentialConfigurationDisplay, CredentialDisplay, CredentialFormat, Metadata, SupportedProofTypes } from "#root/types/specification/metadata";
+import { StatusListOptions } from "../internal/statuslists.js";
 
 export interface MetadataConfiguration extends Omit<Metadata, 'credential_configurations_supported'> {
     "@context"?: string[];
@@ -12,6 +13,7 @@ export interface ExtendableCredentialConfigurations {
 export interface ExtendableCredentialConfiguration extends CredentialConfigurationJwtVC {
     extends?:string;
     vct?:string;
+    statuslist?: StatusListOptions[];
 }
 
 export interface CredentialConfigurationJwtVC {
@@ -30,18 +32,24 @@ export interface CredentialDefinition {
     claims?:CredentialConfigurationClaimData[]; // new style definitions
 }
 
+export type ClaimOriginPath = string[];
+
+export interface CredentialConfigurationClaimData {
+    path: string[];
+    origin?: ClaimOriginPath[]; // an array of paths of possible origins for this specific claim
+    mandatory?:boolean;
+    value_type?: string;
+    display?: CredentialConfigurationDisplay[];
+}
+
 // TODO: support nested claims... or move to path descriptions
 export interface CredentialSubjects {
     [x:string]:CredentialSubjectConfiguration;
 }
 
 export interface CredentialSubjectConfiguration {
-    mandatory?:boolean;
-    value_type?:string;
-    display?:CredentialDisplay[];
-}
-
-export interface CredentialDisplay {
-    name?:string;
-    locale?:string;
+    mandatory?: boolean;
+    value_type?: string;
+    display?: CredentialDisplay[];
+    origin?: ClaimOriginPath[]; // an array of paths of possible origins for this specific claim
 }

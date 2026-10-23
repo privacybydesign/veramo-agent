@@ -18,6 +18,11 @@ export interface Metadata {
     signed_metadata?:string;                   // signed JWT containing metadata as claims
     display?:CredentialIssuerDisplay[];
     credential_configurations_supported:CredentialConfigurations;
+    batch_credential_issuance?:BatchCredentialIssuance; // advertises (and we enforce) the max size of a proofs[] array
+}
+
+export interface BatchCredentialIssuance {
+    batch_size: number;
 }
 
 export interface CredentialResponseEncryptionOptions {
@@ -44,8 +49,9 @@ export interface CredentialConfigurations {
 }
 
 export type CredentialConfiguration = CredentialConfigurationCommon & 
-    (CredentialConfigurationJwtVC | CredentialConfigurationLdpVC | CredentialConfigurationIsoMdl | CredentialConfigurationSdJwt);
-export type CredentialConfigurationSD = CredentialConfigurationCommon & CredentialConfigurationSdJwt;
+    (CredentialConfigurationJwtVC | CredentialConfigurationLdpVC | CredentialConfigurationIsoMdl | CredentialConfigurationDCSdJwt);
+export type CredentialConfigurationDCSD = CredentialConfigurationCommon & CredentialConfigurationDCSdJwt;
+export type CredentialConfigurationVCSD = CredentialConfigurationCommon & CredentialConfigurationVCSdJwt;
 export type CredentialConfigurationVCDM = CredentialConfigurationCommon & CredentialConfigurationJwtVC;
 
 export type CredentialFormat = 'jwt_vc_json' | 'jwt_vc_json-ld' | 'vc+sd-jwt' | 'dc+sd-jwt' | 'ldp_vc' | 'vc+jwt';
@@ -79,8 +85,12 @@ export interface CredentialConfigurationIsoMdl {
 }
 
 // https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#appendix-A.3.2
-export interface CredentialConfigurationSdJwt {
-    vct: string;
+export interface CredentialConfigurationDCSdJwt {
+    vct?: string;
+}
+
+export interface CredentialConfigurationVCSdJwt {
+    credential_definition: CredentialDefinition;
 }
 
 export interface CredentialConfigurationMetadata {

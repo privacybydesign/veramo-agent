@@ -71,12 +71,15 @@ The Docker setup installs all dependencies inside the container, so there's no n
 - `DB_SCHEMA`: name of the database schema
 - `PORT`: port for the Express server
 - `LISTEN_ADDRESS`: local bind address for the Express server
+- `TRUST_PROXY`: Express `trust proxy` setting (number of proxy hops, `loopback`, a subnet, or `true`/`false`). Set to `1` when running behind a single reverse proxy so rate limiting uses the real client IP. Unset trusts no proxy
 - `BASEURL`: base url served by the issuer agent
 - `BEARER_TOKEN`: access token for the administration api
-- `PASSPHRASE`: encoding passphrase used to encrypt secrets. This is a 32 character alpha-numeric string
+- `PASSPHRASE`: **required**. Passphrase used to encrypt private keys at rest; the agent refuses to start without it. Historically this had to be an exactly 32-byte raw AES-256 key, and existing installations that already use such a value keep working unchanged: that exact 32-byte value is still tried first against the already-encrypted keys in the database. Any `PASSPHRASE` of a different length is run through a KDF (scrypt) to derive the actual encryption key, so a normal passphrase of any length can be used for new installations. A 32-byte value that turns out not to match the existing encrypted keys is automatically retried as a KDF input as well, so there is no need to know in advance which of the two interpretations a given installation uses.
 - `OIDFED_KEY`: alias of the identifier key to use for OID Federation purposes
 - `OIDFED_ADMIN_CONTACT`: contact e-mail address for administrative purposes
 - `OIDFED_AUTH`: base url of the directly supervising authority (the authority hint)
+- `SINGLE_TENANT`: set this to a non-empty value to simplify configuration for a single-tenant, domain driven setup
+- `MAX_BATCH_SIZE`: maximum number of proofs accepted in a single credential request's `proofs[]` array, defaults to `15`. This bounds the amount of signing and database work one request can trigger (each proof results in a separately signed credential). It is currently not advertised to wallets as `batch_credential_issuance.batch_size` in the credential issuer metadata, because wallets such as Paradym then fail (the code in `Issuer.generateMetadata` is commented out).
 
 ### File based configuration
 
@@ -106,11 +109,11 @@ The issuer agent reads all files in the configuration directory and serves the c
 
 The credential configuration as defined by the OpenID4VCI spec as part of the `credential_configurations_supported` array. This configuration has to follow the actual credential implementation in the source code, to avoid issues with supported formats and claims.
 
-Please note that the application assumes the credential metadata is in `vc_jwt` format, so the credential attributes are listed in the `credential_definition.credentialSubject` attribute. The content of this attribute is converted automatically if the credential has format `vc+sd-jwt`, which uses a `claims` attribute instead.
+Due to changes over time in the spec, the application supports both the old style `credentialSubject` listing as the newer `claims` listing. Both versions are accepted and converted to the proper output for each credential type.
 
-Please note that the application supports both VCDM 1.1 and VCDM 2.0 type credentials. To enable a VCDM 2.0 credential, configure it with format 'vc+jwt' instead of 'json_vc_jwt'. This is automatically rewritten in the metadata output, because the OID4VCI spec does not understand 'vc+jwt'.
+Please note that the application supports both VCDM 1.1 and VCDM 2.0 type credentials as well as IETF Verifiable Credentials in SD-JWT format. To enable a VCDM 2.0 credential, configure it with format `vc+jwt` instead of `json_vc_jwt`. This is automatically rewritten in the metadata output, because the OID4VCI spec does not understand `vc+jwt`. Use the format `vc+sd-jwt` to get a VCDM 2.0 type credential encoded as an SD-JWT. This is the default format for DIIPv5 implementations.
 
-### Dids
+### DIDs
 
 The key material configuration is stored in the `conf/dids/` directory. Each entry looks as follows:
 
@@ -157,6 +160,7 @@ The credential claim data is located in the `credential_definition` attribute. I
             "claims": [
                 {
                     "path": ["list of path elements"],
+                    "origin": [["optional list of path elements"], ...]
                     "mandatory": "optional boolean",
                     "display": <display object with attribute names>
                 },
@@ -167,6 +171,10 @@ The credential claim data is located in the `credential_definition` attribute. I
 ```
 
 Please note: for the 'w3c' type, the `vc` prefix is automatically prepended to the path specifiers, it should not be added explicitely in this claims definition.
+
+The `credentialSubject.key1.{}` way of specifying claims only supports single layered, single value claims. Use the `claims` array to specificy more complex claim structures.
+
+The optional `origin` value allows some degree of mapping external claim data to a specific credential claim. It is a list of lists, each evaluated in turn and the first valid entry is used. It can be used when the external data retrieved from an `authorisation_code` flow returns a data structure that can change for users or situations. In `pre-authorized` code flow, the data structure is assumed to be defined up front by the front-end issuing application and can be set precisely to the fields the credential requires.
 
 Optionally, instead of extending a credential based on the credential identifier, an `extends` attribute can be configured that points to a specific credential identifier to extend. This can be used to allow an `vc+sd-jwt` or `dc+sd-jwt` credential to extend a regular `vc_jwt` credential. The metadata of the latter is automatically converted to the same metadata of the former:
 
@@ -183,7 +191,7 @@ Optionally, instead of extending a credential based on the credential identifier
 
 The `extends` attribute is removed from the output if it was present.
 
-The `format` attribute is rewritten if it is `vc+jwt` to `json_vc_jwt`. This format indicates the credential should be output as VCDM 2.0.
+If a credential supports a status list implementation, the status list options can be configured in the metadata. Like with the `extends` attribute, this configuration is removed from the metadata output. Please see `docs/StatusList.md` for more information on statuslists.
 
 ### Issuers
 
@@ -198,7 +206,6 @@ The issuer configurations are specified in the `conf/issuer/` directory. Each en
     "adminToken": <string bearer token to be passed by front end agents to create credential offers>,
     "authorizationEndpoint": <optional authorization server to be used for authorized code flow>,
     "tokenEndpoint": <optional token endpoint to be used for authorized code flow>,
-    "statusLists": <optional status list specifications>,
     "did": <did alias or did name as configured in the did section above>,
     "key": "optional key reference index, like '0', depending on the identifier key format",
     "usesNonces": <boolean value that indicates if a nonce value should be generated in the access token>
@@ -208,22 +215,6 @@ The issuer configurations are specified in the `conf/issuer/` directory. Each en
 The definition is available in the `src/types/internal.ts` file, `IssuerConfiguration` interface.
 
 The `key` attribute is automatically set based on the type of the key, usually to '0'. If you have a very specific key configuration, you can override it with the `key` attribute, but it should not be necessary. The `did:jwk` keys always have a key reference of '0'. The `did:web` implementation has a key reference of '0' as well. The `did:key` specification indicates the key reference is the multibase encoded public key, but that is not known in advance if the key needs to be generated fresh.
-
-The statuslist configuration lists the available status lists for this issuer:
-
-```json
-{
-    ...
-    "statusLists": {
-        "AcademicBaseCredential": {
-            "url": <endpoint of the status list reservation service>,
-            "revoke": <endpoint of the status list revoke service>,
-            "token": <string bearer token to be used to access the status list service>
-        }
-    }
-    ...
-}
-```
 
 The `usesNonces` setting is used to enforce the use of nonce values in access tokens from external authorization servers. Because it it not known in advance if such AS entities do or do not use nonce values, their presence can be enforced with this setting. Please note that there is no way for the issuer to know if this nonce value is actually correct without having a separate api to check this. For this reason, using nonce values with external AS entities does not increase security. For the `pre-authorized_code` flow, nonce values _are_ used regardless of this setting.
 
@@ -246,6 +237,12 @@ There is currently no support for serving `schema` metadata directly.
 
 Please see https://www.ietf.org/archive/id/draft-ietf-oauth-sd-jwt-vc-08.html for more information about the VCT metadata.
 
+### Single Tenant
+
+The code base is setup to serve several issuer tenants, each under a specific subpath. This is a convenient setup to allow a small use of resources for a large collection of issuing services. However, under certain circumstances it may be more convenient to have the agent serve only one specific issuer setup and just spawn more different agent containers.
+
+In that case, set the `SINGLE_TENANT` environment variable. This will force the (single) tenant configuration to be served using the `root` Router instance and prevent the tenant-based `.well-known` paths to be generated. Please note that the basic configuration setup does not change much, but it is expected (not enforced!) that only a single entry is available in the `/conf/issuers` configuration path. The name of that issuer is no longer important for generating the subpath (everything is on the root now), but the `baseUrl` setting should match the correct url of the single tenant service. 
+
 ## Basic Code Setup
 
 Main entry script is `src/agent.ts`
@@ -264,15 +261,6 @@ If the `access token` is a JWT, the issuer tries to retrieve the `issuer_state` 
 the session, the issuer will then determine the credential subject data. There is currently no implementation to retrieve additional data based
 on the authenticated user, like requesting a user info endpoint or further dissecting the `access token`.
 
-## Status Lists
-
-This application implements `StatusList2021`, which is an outdated version of `BitstringStatuslist`. See
-https://w3c.github.io/vc-bitstring-status-list/ for more information.
-
-If a status list is configured for an issuer, the application will request the status list agent to reserve a bit
-in the bitstring. The relevant data is returned in the `credentialStatus` attribute of the credential. This information
-is also stored in the database, so it can be used for later revocation and/or suspension.
-
 ## Endpoints
 
 Routing and endpoints are set in various places. There are two kinds of endpoints: OpenID4VC endpoints and API endpoints.
@@ -281,18 +269,21 @@ Routing and endpoints are set in various places. There are two kinds of endpoint
 
 The current setup supports the basic endpoints:
 
-- `<base URL>/<tenant>/.well-known/openid-credential-issuer`
-- `<base URL>/.well-known/openid-credential-issuer/<tenant>`
-- `<base URL>/<tenant>/.well-known/openid-configuration`
-- `<base URL>/.well-known/openid-configuration/<tenant>`
-- `<base URL>/<tenant>/.well-known/oauth-authorization-server`
-- `<base URL>/.well-known/oauth-authorization-server/<tenant>`
-- `<base URL>/<tenant>/.well-known/did.json`
 - `<base URL>/<tenant>/credentials`
 - `<base URL>/<tenant>/nonce`
 - `<base URL>/<tenant>/get-credential-offer/:id`
 
-The first and second URL serves the JSON metadata that configures the issuer tenant. It publishes the available credential templates and the URI to the endpoint that issues the actual credential. The metadata is constructed from the configured `metadata` configuration and any referenced `credential` and `vct` metadata. Credential types are extended automatically to include applicable attributes. Specifically, the `credentialSubject` attribute is converted to the `claims` attribute. For historical reasons, the `credentialSubject` entry is still used in the metadata specification.
+It also supports publishing well-known metadata:
+
+- `<base URL>/<tenant>/.well-known/openid-credential-issuer`
+- `<base URL>/<tenant>/.well-known/openid-configuration`
+- `<base URL>/<tenant>/.well-known/oauth-authorization-server`
+- `<base URL>/.well-known/openid-credential-issuer/<tenant>`
+- `<base URL>/.well-known/openid-configuration/<tenant>`
+- `<base URL>/.well-known/oauth-authorization-server/<tenant>`
+- `<base URL>/<tenant>/.well-known/did.json`
+
+The 1st and 4th URL serves the JSON metadata that configures the issuer tenant. It publishes the available credential templates and the URI to the endpoint that issues the actual credential. The metadata is constructed from the configured `metadata` configuration and any referenced `credential` and `vct` metadata. Credential types are extended automatically to include applicable attributes. Specifically, the `credentialSubject` attribute is converted to the `claims` attribute. For historical reasons, the `credentialSubject` entry is still used in the metadata specification.
 
 The `openid-configuration` and `oauth-authorization-server` are published to configure the token endpoint in the pre-authorized_code flow. The UniMe wallet
 requires the latter and does not read the former. Sphereon reads both. The spec does not require any of them, but then the token endpoint is undefined.
@@ -307,6 +298,8 @@ The `nonce` POST endpoint serves a fresh nonce value, not linked to any session.
 
 The `get-credential-offer` endpoint serves the actual credential issuance offer, which is referenced by URI in the QR code.
 
+Please note that in case of a `SINGLE_TENANT` configured environment, alle the `<tenant>/` path elements above are removed. In this case, there is no tenant name or path element.
+
 ### API endpoints
 
 The setup has the following endpoints for the back-end API:
@@ -314,7 +307,8 @@ The setup has the following endpoints for the back-end API:
 - POST `<base URL>/<tenant>/api/create-offer`
 - POST `<base URL>/<tenant>/api/check-offer`
 - POST `<base URL>/<tenant>/api/list-credentials`
-- POST `<base URL>/<tenant>/api/revoke-credential`
+
+See the note in the previous paragraph about `SINGLE_TENANT` configurations.
 
 #### Create Offer
 
@@ -428,29 +422,6 @@ is optional):
 
 The endpoint returns a JSON array containing all the database rows, including the database id, the uuid, claims, status-list information
 and saved-updated dates. This data can be used in further interactions.
-
-#### Revoke Credential
-
-POST `<base URL>/<tenant>/api/revoke-credential`
-
-This endpoint allows an issuer to list the credentials it has previously issued. This can be used in use cases where
-users want to revoke or re-issue/refresh credentials.:
-
-```json
-{
-    "uuid": <credential uuid>,
-    "state": <set to 'revoke' to set the bit in the statuslist, or another value to unset it>,
-    "list": <optional URI of a specific statuslist for which to set/unset the status>
-}
-```
-
-The endpoint returns a JSON object containing a `status` attribute indicating the status of the revocation:
-
-- `REVOKED`: credential was revoked (bit is set)
-- `WAS_REVOKED`: credential was already set to revoked, state has not changed
-- `UNREVOKED`: credential was unrevoked (bit not set)
-- `WAS_UNREVOKED`: credential was not revoked, state has not changed
-- `UNKNOWN`: status list cannot be determined, bit was never reserved, etc.
 
 # Changelog / Release Notes
 

@@ -38,14 +38,14 @@ test('JSONLD conversion', async () => {
     credential.holder = {type:'kid', did:'did:test:holder', data: 'did:test:holder#0'};
     credential.metaData.issuanceDate = '2025-01-01 01:01:01';
     credential.contexts.push("http://example.net");
-    credential.output = (new VCDM(credential)).build();
+    credential.output = await (new VCDM(credential)).build();
     const output = await JSONLD.sign(credential, credential.output, '2025-01-01T02:02:02');
 
     expect(output).toBeDefined();
     expect(output.proof).toBeDefined();
     expect(output.proof?.type).toBe('JsonWebSignature2020');
     expect(output.proof?.proofPurpose).toBe('assertionMethod');
-    expect(output.proof?.jws).toBe('eyJhbGciOiJFUzI1NiIsImI2NCI6dHJ1ZSwiY3JpdCI6WyJiNjQiXX0..u4S8QfUM2vEBTvu-oHNTo4EA4CJoIzxrondzJrXzI4DVwapO0Hy3B-rtGlRqWJhUrdADX4Xi7zus_QYHzKjdIQ');
+    expect(output.proof?.jws).toBe('eyJhbGciOiJFUzI1NiIsImI2NCI6dHJ1ZSwiY3JpdCI6WyJiNjQiXX0..L454vxzgMcRK3bLmoJxRDDFQ2V5AVTn7TPdGNOKMRNEvVXp7F7ZIl_YvSzv7ic_aM7oIA-o2Gh5OT-pUt_h1pw');
 });
 
 test('JSONLD conversion with unspecced attributes', async () => {
@@ -61,12 +61,12 @@ test('JSONLD conversion with unspecced attributes', async () => {
     credential.type = 'CredentialTest';
     // additional values are added, but because they are not spec-ed in the context, they are ignored
     credential.data = {"@context": ["http://example.net"], given:'Test', unspecced:'No value'};
-    credential.holder = 'did:test:holder';
+    credential.holder = {type:'kid', did:'did:test:holder', data: 'did:test:holder#0'};
     credential.metaData.issuanceDate = '2025-01-01 01:01:01';
     credential.metaData.evidence = {type:'Evidence2020'}; // not (yet) in the VC context apparently
     credential.contexts.push("http://example.net");
 
-    const output = (new VCDM(credential)).build();
+    const output = await (new VCDM(credential)).build();
     await expect(JSONLD.sign(credential, output, '2025-01-01T02:02:02')).rejects.toThrow("JWS Safe event handler");
 });
 
@@ -107,17 +107,17 @@ test('JSONLD conversion with credential type context', async () => {
     credential.type = 'CredentialTest';
     // additional values are added, but because they are not spec-ed in the context, they are ignored
     credential.data = {given:'Test', unspecced:'No value'};
-    credential.holder = 'did:test:holder';
+    credential.holder = {type:'kid', did:'did:test:holder', data: 'did:test:holder#0'};
     credential.metaData.issuanceDate = '2025-01-01 01:01:01';
     credential.metaData.evidence = {type:'Evidence2020'}; // not (yet) in the VC context apparently
     credential.contexts.push("http://example.net");
 
-    let output = (new VCDM(credential)).build();
+    let output = await (new VCDM(credential)).build();
     output = await JSONLD.sign(credential, output, '2025-01-01T02:02:02');
 
     expect(output).toBeDefined();
     expect(output.proof).toBeDefined();
     expect(output.proof?.type).toBe('JsonWebSignature2020');
     expect(output.proof?.proofPurpose).toBe('assertionMethod');
-    expect(output.proof?.jws).toBe('eyJhbGciOiJFUzI1NiIsImI2NCI6dHJ1ZSwiY3JpdCI6WyJiNjQiXX0..FCeRDRWugsCOrJ5KKn3zOtHdGadMwdKXB4OAKnjtX5D0quUgSqZdX_vBHqSDP3alzigdxi7qOoVBODSTIz1b0Q');
+    expect(output.proof?.jws).toBe('eyJhbGciOiJFUzI1NiIsImI2NCI6dHJ1ZSwiY3JpdCI6WyJiNjQiXX0..kccyXi5bzo9oQwVjet6g2HkGiPRkPnUDTVzNVJUKxwlOILbaXRQSgshl_Tl4YjiCKKU-iZOzdbh7LzgzifT--A');
 });
