@@ -33,6 +33,21 @@ async function createBasicStatusList(bitSize:number)
 
 }
 
+test("size defaults to 131072 when omitted", () => {
+    expect(new StatusListType({name: 'test', purpose: 'test'} as any, issuer).size).toBe(131072);
+});
+
+test("statuslist+jwt rejects bits not in {1,2,4,8}", () => {
+    for (const bitSize of [3, 5, 6, 7]) {
+        expect(() => new StatusListType({name: 'test', size: 1000, purpose: 'test', type: 'statuslist+jwt', bitSize}, issuer)).toThrow();
+    }
+    for (const bitSize of [1, 2, 4, 8]) {
+        expect(() => new StatusListType({name: 'test', size: 1000, purpose: 'test', type: 'statuslist+jwt', bitSize}, issuer)).not.toThrow();
+    }
+    // W3C types are unaffected (spec allows other sizes there)
+    expect(() => new StatusListType({name: 'test', size: 1000, purpose: 'test', type: 'BitstringStatusList', bitSize: 3}, issuer)).not.toThrow();
+});
+
 test("Setting bits", async () => {
     const lst = await createBasicStatusList(1);
     // reserve a bit

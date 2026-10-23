@@ -7,6 +7,8 @@ import { getDbConnection } from '#root/database/databaseService';
 import { Issuer } from '#root/issuer/Issuer';
 import { Bitstring } from '@digitalcredentials/bitstring';
 import { statusListAsJWT } from '../statusListAsJWT.js';
+import { inflateSync } from 'zlib';
+import { fromString } from 'uint8arrays';
 
 const mockRepo = {
     find: vi.fn().mockResolvedValue([]),
@@ -32,6 +34,43 @@ async function createBasicStatusList(bitSize:number)
     lst.revoked = await contentList.encodeBits();
     return lst;
 }
+
+const issuer = { basePath: () => '/issuer' } as unknown as Issuer;
+
+// draft-ietf-oauth-status-list §4.1: blocks are packed LSB-first. Worked spec example:
+// statuses[0..15] = 1,0,0,1,1,1,0,1, 1,1,0,0,0,1,0,1 -> bytes 0xB9 0xA3.
+test("IETF LSB-first encoding, bits=1 (spec 0xB9 0xA3)", async () => {
+    const lst = await createBasicStatusList(1);
+    const statuses = [1,0,0,1,1,1,0,1, 1,1,0,0,0,1,0,1];
+    const dataList = new Bitstring({buffer: await Bitstring.decodeBits({encoded:lst.content})});
+    statuses.forEach((_, i) => dataList.set(i, true)); // enable the entries we set
+    lst.content = await dataList.encodeBits();
+
+    const Stype = new StatusListType({name: 'test', size: 1000, purpose: 'test'}, issuer);
+    for (let i = 0; i < statuses.length; i++) {
+        await Stype.setState(lst, i, statuses[i]);
+    }
+
+    const bytes = inflateSync(fromString(await StatusListType.toZlibCompression(lst), 'base64url'));
+    expect(bytes[0]).toBe(0xB9);
+    expect(bytes[1]).toBe(0xA3);
+});
+
+test("IETF LSB-first encoding, bits=2", async () => {
+    const lst = await createBasicStatusList(2);
+    const statuses = [1, 2, 3, 0]; // -> byte0 = 0b00111001 = 0x39
+    const dataList = new Bitstring({buffer: await Bitstring.decodeBits({encoded:lst.content})});
+    statuses.forEach((_, i) => dataList.set(i, true));
+    lst.content = await dataList.encodeBits();
+
+    const Stype = new StatusListType({name: 'test', size: 1000, purpose: 'test'}, issuer);
+    for (let i = 0; i < statuses.length; i++) {
+        await Stype.setState(lst, i, statuses[i]);
+    }
+
+    const bytes = inflateSync(fromString(await StatusListType.toZlibCompression(lst), 'base64url'));
+    expect(bytes[0]).toBe(0x39);
+});
 
 test("Creating JWT", async () => {
     const testkey = await Factory.createFromType('Ed25519', "fbe04e71bce89f37e0970de16a97a80c4457250c6fe0b1e9297e6df778ae72a8");
@@ -67,5 +106,7 @@ test("Creating JWT", async () => {
 
     const jwt = await statusListAsJWT(status, issuer);
     expect(jwt).toBeDefined();
-    expect(jwt).toBe('eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6ZXhhbXBsZS5jb20jMCIsInR5cCI6InN0YXR1c2xpc3Qrand0In0.eyJpc3MiOiJkaWQ6d2ViOmV4YW1wbGUuY29tIiwiZXhwIjoxNTc3ODM3ODIzLCJpYXQiOjE1Nzc4MzY5MjMsInN1YiI6Imh0dHBzOi8vZXhhbXBsZS5jb20iLCJ0dGwiOjMwMCwic3RhdHVzX2xpc3QiOnsiYml0cyI6MSwibHN0IjoiZUp3VDRHQmdZREJnR0hEQVJIVVRIUWpJQXdCUE5nQ0wifX0.Lh8dm2M0ooaNCi1r2TBbao_UPolpdFtCyAe4mivx_hJOsPaFxhdE6p-akEWDAMaph_smwwkkxMHvUvMU8V33Ag');
+    // LSB-first (IETF §4.1) token. bits=2 matches the stored list bitsize; decodes back to
+    // idx1=1,6=2,21=3,203=0,547=2,872=1.
+    expect(jwt).toBe('eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDp3ZWI6ZXhhbXBsZS5jb20jMCIsInR5cCI6InN0YXR1c2xpc3Qrand0In0.eyJpc3MiOiJkaWQ6d2ViOmV4YW1wbGUuY29tIiwiZXhwIjoxNTc3ODM3ODIzLCJpYXQiOjE1Nzc4MzY5MjMsInN1YiI6Imh0dHBzOi8vZXhhbXBsZS5jb20iLCJ0dGwiOjMwMCwic3RhdHVzX2xpc3QiOnsiYml0cyI6MiwibHN0IjoiZUp4alVXQmdZT0JoR0hEUVFIVVRHUW5JQXdCb25nQ3kifX0.4beso9h5i_uqX-oGTeuqDgqgcWRPJ0GAdT889oecuwrOfNeEqa0le-Np0Ir2gbp6i5iDYeScRrQpuolhz4nqCA');
 });

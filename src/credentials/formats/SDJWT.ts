@@ -40,11 +40,12 @@ export class SDJWT
     {
         debug("signing SD JWT");
 
-        const baseCredential:SdJwtVcPayload = {
+        // vct is only set for dc+sd-jwt; a vc+sd-jwt has none, so cast past SdJwtVcPayload's required vct
+        const baseCredential = {
             iss: this.credential.issuer!.did!.did,
             fed: this.credential.issuer?.options.baseUrl,
             iat: moment().unix()
-        };
+        } as unknown as SdJwtVcPayload;
 
         let vct:any = null;
         let vctIntegrity:string|null = null;
@@ -167,6 +168,11 @@ export class SDJWT
     // add the status-list data for IETF token lists.
     private addStatusListData(baseCredential:SdJwtVcPayload)
     {
+        // a vc+sd-jwt is a VCDM 2.0 credential: its status lives in credentialStatus, set by VCDM.build()
+        if (this.type != 'dc+sd-jwt') {
+            return;
+        }
+
         // status list data should _always_ be added by the issuer, never by passing prefabricated data.
         // Hence we can be more or less sure of the constitution of the data at this point. It should contain
         // ready to consume StatusListCredentialAttributes

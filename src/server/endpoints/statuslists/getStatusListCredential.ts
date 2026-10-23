@@ -9,7 +9,7 @@ export function getStatusListCredential(issuer:Issuer, statusListOptions:StatusL
         async (request: Request, response: Response<string>) => {
             try {
                 const statusList = new StatusListType(statusListOptions, issuer);
-                response.setHeader('Content-type', 'application/statuslist+jwt');
+                response.setHeader('Content-type', statusList.getSpecType() == 'ietf' ? 'application/statuslist+jwt' : 'application/vc+jwt');
                 response.send(await statusList.getListCredential(parseInt(request.params.index as string), issuer));
             } catch {
                 response.status(404).end('List not found');

@@ -204,8 +204,10 @@ async function validateCredentialRequestProofs(issuer:Issuer, session:Session, c
         };
     }
 
+    // all proofs of a batch carry the same c_nonce: consume it once per request, not once per proof
+    const consumedNonces = new Map<string, CNonceState>();
     for(const proof of proofs) {
-        const proofError = await validateCredentialRequestProof(issuer, session, proof);
+        const proofError = await validateCredentialRequestProof(issuer, session, proof, consumedNonces);
 
         if (proofError.error != ErrorCodes.NO_ERROR) {
             return proofError;
@@ -217,7 +219,9 @@ async function validateCredentialRequestProofs(issuer:Issuer, session:Session, c
     return { error: ErrorCodes.NO_ERROR, description: '', data: proofResults};
 }
 
-async function validateCredentialRequestProof(issuer:Issuer, session:Session, proof:string):Promise<ApiState>
+type CNonceState = { uuid: string; session: string };
+
+async function validateCredentialRequestProof(issuer:Issuer, session:Session, proof:string, consumedNonces:Map<string, CNonceState>):Promise<ApiState>
 {
     const error:ApiState = {error:ErrorCodes.NO_ERROR, description: ''};
     
@@ -315,7 +319,7 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
             return error;
         }
 
-        const cNonceState = await issuer.nonceStates.consumeCNonce(nonce);
+        const cNonceState = consumedNonces.get(nonce) ?? await issuer.nonceStates.consumeCNonce(nonce);
         if (!cNonceState) {
             debug("Proof is invalid because the nonce was not found", nonce);
             error.error = ErrorCodes.INVALID_REQUEST;
@@ -330,6 +334,7 @@ async function validateCredentialRequestProof(issuer:Issuer, session:Session, pr
             error.description = "Invalid nonce";
             return error;
         }
+        consumedNonces.set(nonce, cNonceState);
     }
 
     if (!holderData?.did) {

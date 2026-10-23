@@ -47,12 +47,11 @@ export async function statusListAsVC(data:StatusListStatus, issuer:Issuer)
     const jwt = new JWT();
     jwt.payload = statusListCredential || {};
 
-    // typ and cty are only defined for JSON-LD. The JOSE definition does not mention
-    // these headers, but they are not explicitely disallowed either
+    // VC-JOSE-COSE §3.1.1: a JWT-secured VCDM 2.0 credential uses typ vc+jwt
     jwt.header = {
         alg: key!.algorithms()[0],
         kid: did + '#' + Factory.getKeyReference(did),
-        typ: 'jwt_vc_json', // should this be vc+jwt?
+        typ: 'vc+jwt',
     };
 
     // It is RECOMMENDED to use the IANA JSON Web Token Claims registry and the IANA JSON
@@ -66,6 +65,9 @@ export async function statusListAsVC(data:StatusListStatus, issuer:Issuer)
     jwt.payload!.iat = moment(data.statusList.updateDate).unix();
     jwt.payload!.exp = moment(data.date).add(15, 'minutes').unix();
     jwt.payload!.jti = statusListCredential.id;
+    // matches the issuer property, as for the vc+jwt credentials in JOSE.ts; verifiers resolve the
+    // signing key from iss + kid
+    jwt.payload!.iss = did;
 
     await jwt.sign(key!);
     return jwt.token;

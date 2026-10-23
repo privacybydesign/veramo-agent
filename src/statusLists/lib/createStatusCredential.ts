@@ -18,7 +18,8 @@ export function createStatusCredential(statusList:StatusListType, list:StatusLis
         credentialStatus = {
             id: statusList.pathOfIndex(list.index, index),
             type: statusList.getStatusCredentialType(),
-            statusListIndex: index,
+            // the W3C specs define statusListIndex as an integer expressed as a base-10 string
+            statusListIndex: String(index),
             statusListCredential: statusList.createCredentialUrl(list.index)
         };
 

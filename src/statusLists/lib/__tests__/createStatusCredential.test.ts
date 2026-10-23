@@ -30,7 +30,7 @@ test("Basic Credential", async () => {
     expect(result).toBeDefined();
     expect(result.id).toBe(envval + '/issuer/sl/mylist/18#1241');
     expect(result.type).toBe('BitstringStatusListEntry');
-    expect(result.statusListIndex).toBe(1241);
+    expect(result.statusListIndex).toBe('1241');
     expect(result.statusListCredential).toBe(envval + '/issuer/sl/mylist/18');
     expect(result.statusPurpose).toBe('purpose');
     expect(result.statusSize).toBeUndefined();
@@ -61,7 +61,7 @@ test("Old revocation Credential", async () => {
     expect(result).toBeDefined();
     expect(result.id).toBe(envval + '/issuer/sl/mylist/18#1241');
     expect(result.type).toBe('RevocationList2021Status');
-    expect(result.statusListIndex).toBe(1241);
+    expect(result.statusListIndex).toBe('1241');
     expect(result.statusListCredential).toBe(envval + '/issuer/sl/mylist/18');
     expect(result.statusPurpose).toBeUndefined();
     expect(result.statusSize).toBeUndefined();
@@ -78,7 +78,7 @@ test("Multi bit Credential", async () => {
     expect(result).toBeDefined();
     expect(result.id).toBe(envval + '/issuer/sl/mylist/18#1241');
     expect(result.type).toBe('BitstringStatusListEntry');
-    expect(result.statusListIndex).toBe(1241);
+    expect(result.statusListIndex).toBe('1241');
     expect(result.statusListCredential).toBe(envval + '/issuer/sl/mylist/18');
     expect(result.statusPurpose).toBe('purpose');
     expect(result.statusSize).toBe(2);
@@ -95,7 +95,7 @@ test("Multi bit Credential with messages", async () => {
     expect(result).toBeDefined();
     expect(result.id).toBe(envval + '/issuer/sl/mylist/18#1241');
     expect(result.type).toBe('BitstringStatusListEntry');
-    expect(result.statusListIndex).toBe(1241);
+    expect(result.statusListIndex).toBe('1241');
     expect(result.statusListCredential).toBe(envval + '/issuer/sl/mylist/18');
     expect(result.statusPurpose).toBe('purpose');
     expect(result.statusSize).toBe(2);

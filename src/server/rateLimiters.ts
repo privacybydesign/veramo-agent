@@ -3,6 +3,7 @@ import { Request } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { getIssuerStore } from '#root/issuer/Store';
 import { adminBearerToken, hasAdminBearerToken } from '#root/utils/adminBearerToken';
+import { DISABLE_RATE_LIMITS } from '#root/environment';
 
 // Shared rate limiters, grouped by threat profile rather than by endpoint. These are
 // defense in depth, not the primary protection for any of them: the real protection
@@ -18,6 +19,7 @@ export const tokenEndpointRateLimiter = rateLimit({
     limit: 20,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => DISABLE_RATE_LIMITS,
 });
 
 // /credentials: reachable with any valid (not necessarily DPoP-bound) access token,
@@ -28,6 +30,7 @@ export const credentialEndpointRateLimiter = rateLimit({
     limit: 30,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => DISABLE_RATE_LIMITS,
 });
 
 // /nonce: fully unauthenticated and persists new server-side nonce state on every
@@ -37,6 +40,7 @@ export const nonceEndpointRateLimiter = rateLimit({
     limit: 60,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => DISABLE_RATE_LIMITS,
 });
 
 // Admin APIs (both the top-level /api/* admin API and the per-issuer /api/* back
@@ -56,7 +60,7 @@ export const adminAuthRateLimiter = rateLimit({
     limit: 5,
     standardHeaders: true,
     legacyHeaders: false,
-    skip: (request) => hasValidAdminToken(request),
+    skip: (request) => DISABLE_RATE_LIMITS || hasValidAdminToken(request),
 });
 
 function digest(value: string): Buffer {
@@ -100,4 +104,5 @@ export const publicMetadataRateLimiter = rateLimit({
     limit: 100,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: () => DISABLE_RATE_LIMITS,
 });

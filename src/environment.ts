@@ -26,6 +26,9 @@ export const TRUST_PROXY: boolean|number|string|undefined =
 // single request can trigger
 export const MAX_BATCH_SIZE = process.env.MAX_BATCH_SIZE ? parseInt(process.env.MAX_BATCH_SIZE) : 15
 
+// Turns off all rate limiters; meant for test setups that issue many credentials from a single address
+export const DISABLE_RATE_LIMITS = !!process.env.DISABLE_RATE_LIMITS;
+
 export const CONF_PATH = process.env.CONF_PATH ? resolve(process.env.CONF_PATH) : resolve('../../conf')
 export const DID_OPTIONS_PATH = `${CONF_PATH}/dids`
 export const ISSUER_PATH = `${CONF_PATH}/issuer`;
