@@ -1,0 +1,6 @@
+{
+  "alias": "yivi-did",
+  "provider": "did:jwk",
+  "type": "Secp256r1",
+  "services": []
+}
