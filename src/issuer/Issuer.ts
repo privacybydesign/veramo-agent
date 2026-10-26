@@ -26,7 +26,6 @@ import { retrieveServerMetadata } from './lib/retrieveServerMetadata.js';
 import { convertConfigToVCDM } from './lib/convertConfigToVCDM.js';
 import { convertConfigToDCSDJWT, convertConfigToVCSDJWT } from './lib/convertConfigToSDJWT.js';
 import { StatusListType } from '#root/statusLists/StatusListType';
-import { MAX_BATCH_SIZE } from '#root/environment';
 
 export class Issuer
 {

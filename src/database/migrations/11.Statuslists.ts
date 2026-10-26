@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner, Table, TableColumn } from 'typeorm'
+import { MigrationInterface, QueryRunner, Table } from 'typeorm'
 import { migrationGetTableName } from './migration-functions.js'
 
 export class Statuslists1769001656334 implements MigrationInterface {

@@ -1,6 +1,5 @@
 import Debug from 'debug';
 const debug = Debug("status:list");
-import { getEnv } from "#root/utils/getEnv";
 import  {Bitstring} from '@digitalcredentials/bitstring';
 import { StatusList } from "#root/database/entities/StatusList";
 import { getDbConnection } from "#root/database/databaseService";
