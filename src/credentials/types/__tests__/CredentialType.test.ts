@@ -4,11 +4,11 @@ import { Credential } from '#root/credentials/Credential';
 
 class TestCredential extends CredentialType
 {
-    public check(credential:Credential) {
+    public check() {
         return true;
     }
 
-    public async resolve(credential:Credential) {
+    public async resolve() {
         return true;
     }
 }

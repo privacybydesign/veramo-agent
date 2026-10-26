@@ -12,7 +12,7 @@ import { fromString } from 'uint8arrays';
 import moment from 'moment';
 import { Factory } from '@muisit/cryptokey';
 import { VCDM } from './VCDM.js';
-import { StatusListCredentialAttribute, StatusListCredentialAttributeIETF, StatusListCredentialData } from '#root/types/internal/statuslists';
+import { StatusListCredentialAttributeIETF, StatusListCredentialData } from '#root/types/internal/statuslists';
 
 export class SDJWT
 {

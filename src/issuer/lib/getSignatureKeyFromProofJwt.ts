@@ -24,7 +24,7 @@ export async function getHolderKeyFromProofJwt(jwt:JWT): Promise<HolderData|null
         try {
             ckey = await Factory.resolve(kid.split('#')[0].trim('='));
         }
-        catch (e) {
+        catch {
             // never leak resolver-internal errors (dns/connection/parse failures) to the
             // caller: treat any resolution failure the same as "key not found"
             return null;
@@ -43,7 +43,7 @@ export async function getHolderKeyFromProofJwt(jwt:JWT): Promise<HolderData|null
         try {
             ckey = await Factory.createFromJWK(kid);
         }
-        catch (e) {
+        catch {
             return null;
         }
         const did = ckey ? (ckey.keyType + ':' + ckey.exportPublicKey()) : null;
