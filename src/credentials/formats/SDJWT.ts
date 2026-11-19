@@ -43,17 +43,25 @@ export class SDJWT
         // vct is only set for dc+sd-jwt; a vc+sd-jwt has none, so cast past SdJwtVcPayload's required vct
         const baseCredential = {
             iss: this.credential.issuer!.did!.did,
-            fed: this.credential.issuer?.options.baseUrl,
+            ...(!this.credential.configuration?.omit_fed_claim && {fed: this.credential.issuer?.options.baseUrl}),
             iat: moment().unix()
         } as unknown as SdJwtVcPayload;
 
         let vct:any = null;
         let vctIntegrity:string|null = null;
-        if (this.type == 'dc+sd-jwt') {
+        const configuredVct = this.credential?.configuration?.vct;
+        if (this.type == 'dc+sd-jwt' && configuredVct && !isHttpUrl(configuredVct)) {
+            // a type identifier that is not a URL cannot be fetched: issue it as-is and take
+            // the disclosure rules from the locally configured vct document
+            debug("setting configured vct identifier", configuredVct);
+            vct = getVctForCredentialType(this.credential.type!);
+            baseCredential.vct = configuredVct;
+        }
+        else if (this.type == 'dc+sd-jwt') {
             debug("setting vct");
-            if (this.credential?.configuration?.vct) {
+            if (configuredVct) {
                 debug("getting vct based on configured value");
-                const remote = await getRemoteVctWithIntegrity(this.credential.configuration.vct);
+                const remote = await getRemoteVctWithIntegrity(configuredVct);
                 if (remote) {
                     vct = remote.vct;
                     vctIntegrity = remote.integrity;
@@ -119,7 +127,7 @@ export class SDJWT
           hashAlg: 'sha-256',
         });
     
-        const disclosureFrame:DisclosureFrame<SdJwtVcPayload> = this.createDisclosureFrameFromVct(vct);
+        const disclosureFrame:DisclosureFrame<SdJwtVcPayload> = this.createDisclosureFrameFromVct(vct, baseCredential);
         const sdcredential = await sdjwt.issue(baseCredential, disclosureFrame, {
           header: {
             typ: this.type,
@@ -131,21 +139,46 @@ export class SDJWT
         this.credential.output = sdcredential;
     }
 
-    private createDisclosureFrameFromVct(vct:any):DisclosureFrame<SdJwtVcPayload>
+    private createDisclosureFrameFromVct(vct:any, payload:any):DisclosureFrame<SdJwtVcPayload>
     {
         let disclosureFrame:DisclosureFrame<SdJwtVcPayload> = {};
         if (vct && vct.claims) {
-            for (const claim of vct.claims) {
-                if (claim.path && (claim.sd === 'allowed' || claim.sd === 'always')) {
-                    disclosureFrame = this.addPathToDisclosureFrame(disclosureFrame, claim.path);
+            const paths:VctClaimPathElement[][] = vct.claims
+                .filter((claim:any) => claim.path && (claim.sd === 'allowed' || claim.sd === 'always'))
+                .map((claim:any) => claim.path);
+            for (const path of paths) {
+                // an array element whose own claims are disclosed separately stays inline: wallets such
+                // as irmago do not look for disclosures inside a disclosed array element
+                if (path[path.length - 1] === null && paths.some((other) => isLongerPathUnder(other, path))) {
+                    continue;
                 }
+                disclosureFrame = this.addPathToDisclosureFrame(disclosureFrame, path, payload);
             }
         }
         return disclosureFrame as DisclosureFrame<SdJwtVcPayload>;
     }
 
-    private addPathToDisclosureFrame(disclosureFrame:DisclosureFrame<SdJwtVcPayload>, path:VctClaimPathElement[]): DisclosureFrame<SdJwtVcPayload>
+    private addPathToDisclosureFrame(disclosureFrame:DisclosureFrame<SdJwtVcPayload>, path:VctClaimPathElement[], data:any): DisclosureFrame<SdJwtVcPayload>
     {
+        // a null segment selects every array element; the frame needs one entry per actual element
+        if (path.length > 0 && path[0] === null) {
+            if (!Array.isArray(data)) {
+                return disclosureFrame;
+            }
+            const frame = disclosureFrame as any;
+            data.forEach((element, index) => {
+                if (path.length === 1) {
+                    frame._sd = frame._sd ?? [];
+                    if (!frame._sd.includes(index)) {
+                        frame._sd.push(index);
+                    }
+                }
+                else {
+                    frame[index] = this.addPathToDisclosureFrame(frame[index] ?? {}, path.slice(1), element);
+                }
+            });
+            return disclosureFrame;
+        }
         if (path.length === 1) {
             if (!disclosureFrame._sd) {
                 disclosureFrame._sd = [];
@@ -159,7 +192,7 @@ export class SDJWT
             }
             const remainingPath = path.slice(1);
             const frameToAdd = disclosureFrame[key] as DisclosureFrame<SdJwtVcPayload>;
-            const frame = this.addPathToDisclosureFrame(frameToAdd, remainingPath);
+            const frame = this.addPathToDisclosureFrame(frameToAdd, remainingPath, data?.[key as string]);
             disclosureFrame[key] = frame as any;
         }
         return disclosureFrame;
@@ -197,4 +230,13 @@ export class SDJWT
             }
         }
     }
+}
+function isHttpUrl(value:string): boolean
+{
+    return /^https?:\/\//i.test(value);
+}
+
+function isLongerPathUnder(other:VctClaimPathElement[], prefix:VctClaimPathElement[]): boolean
+{
+    return other.length > prefix.length && prefix.every((segment, index) => other[index] === segment);
 }

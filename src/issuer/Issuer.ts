@@ -424,7 +424,8 @@ export class Issuer
 
         // set the algorithms according to what we support as issuer
         resultCredential.credential_signing_alg_values_supported = [this.algorithm()];
-        resultCredential.cryptographic_binding_methods_supported = ['did:jwk', 'did:key'];
+        // a wallet binding with a jwk proof gets cnf.jwk, which some credential schemas require
+        resultCredential.cryptographic_binding_methods_supported = decoratedCredential.cnf_jwk ? ['jwk'] : ['did:jwk', 'did:key'];
         resultCredential.proof_types_supported = {
             "jwt": {
                 "proof_signing_alg_values_supported": ["ES256", "ES256K", "EdDSA", "RS256"]

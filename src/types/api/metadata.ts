@@ -12,7 +12,12 @@ export interface ExtendableCredentialConfigurations {
 
 export interface ExtendableCredentialConfiguration extends CredentialConfigurationJwtVC {
     extends?:string;
+    // a URL is fetched as the type metadata; any other value (e.g. 'urn:eudi:eucc:1') is issued as-is
     vct?:string;
+    // leave out the non-standard `fed` claim, for types whose schema forbids extra claims
+    omit_fed_claim?:boolean;
+    // offer only jwk holder binding, so the credential carries cnf.jwk
+    cnf_jwk?:boolean;
     statuslist?: StatusListOptions[];
 }
 
