@@ -1,4 +1,6 @@
 FROM node:24-alpine@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
+# CVE-2026-4738: node:24-alpine still ships zlib 1.3.2; drop once it carries 1.4
+RUN apk upgrade --no-cache zlib
 WORKDIR /app
 
 COPY package.json yarn.lock ./
