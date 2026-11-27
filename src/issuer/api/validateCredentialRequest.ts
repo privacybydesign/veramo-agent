@@ -58,7 +58,12 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
             session.data.accessData = { ...(session.data.presentationData ?? {}), ...(data?.payload ?? {}) };
         }
 
-        if (!usesAuthorisationCodeFlow && session && session.data?.status != CredentialOfferStatus.ACCESS_TOKEN_CREATED) {
+        // An offer can hold several credentials, which the wallet collects with one credential request each. After
+        // the first request the session stays in CREDENTIAL_REQUEST_RECEIVED until every data set is issued, so
+        // accept that state too as long as something is left to issue.
+        const awaitingMore = session?.data?.status == CredentialOfferStatus.CREDENTIAL_REQUEST_RECEIVED
+            && Object.values(session.data?.credentialDataSets ?? {}).some((ds:any) => !ds.issued);
+        if (!usesAuthorisationCodeFlow && session && session.data?.status != CredentialOfferStatus.ACCESS_TOKEN_CREATED && !awaitingMore) {
             debug("invalid because we use pre-authorised code flow and did not yet create an access token");
             error.error = ErrorCodes.INVALID_REQUEST;
             error.description = "No access token created";
@@ -108,6 +113,12 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
         debug("invalid because no data set could be found for the request", request.body.credential_identifier, request.body.credential_configuration_id);
         error.error = ErrorCodes.INVALID_CREDENTIAL_REQUEST;
         error.description = "Credential type not found";
+        return error;
+    }
+    if (credentialDataSet.issued && !sessionUsesAuthorisationCodeFlow(session)) {
+        debug("invalid because this credential of the offer was already issued", credentialDataSet.id);
+        error.error = ErrorCodes.INVALID_CREDENTIAL_REQUEST;
+        error.description = "Credential already issued";
         return error;
     }
 
