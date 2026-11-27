@@ -1,5 +1,4 @@
 import { StringKeyedObject } from "#root/types/index";
-import { AuthorizationCodeGrant } from "#root/types/specification/credential_offer";
 
 
 export interface TxCodeRequest {
@@ -15,11 +14,15 @@ export interface APIPreAuthGrant {
     'pre-authorized_code'?: string;
     tx_code?: TxCodeRequest|boolean;
     interval?: number;
-    authorization_server?: string;
+}
+
+// the authorization server is chosen by the issuer, based on the type of offer
+export interface APIAuthorizationCodeGrant {
+    issuer_state?: string;
 }
 
 export interface APIGrants {
-    authorization_code?: AuthorizationCodeGrant;
+    authorization_code?: APIAuthorizationCodeGrant;
     'urn:ietf:params:oauth:grant-type:pre-authorized_code'?: APIPreAuthGrant;
 }
 
@@ -36,4 +39,38 @@ export type CreateCredentialOfferResponse = {
     uri: string;
     txCode?: string;
     id?: string;
+}
+
+
+/* v2: creating a credential offer for one or more credentials */
+
+// a single claim: the path in the credential data (for example ['credentialSubject', 'name']) and its value
+export interface ClaimRequest {
+    path: (string|number)[];
+    value: string|boolean|number;
+}
+
+// One credential of the offer. The issuer creates a data set from the claims
+export interface CredentialRequestV2 {
+    credential_configuration_id: string;    // key in the credential_configurations_supported of the issuer metadata
+    claims?: ClaimRequest[];
+    credential?: any;
+    credential_callback?: string;
+}
+
+// The transaction code of the offer. The input_mode and length have defaults, the description is required
+export interface TxCodeRequestV2 {
+    input_mode?: 'numeric' | 'text';        // default numeric
+    length?: number;                        // default 4
+    description: string;
+}
+
+export interface CreateCredentialOfferRequestV2 {
+    // optional when a dcql query is present: that implies authorization_code
+    grant?: 'pre-authorized_code' | 'authorization_code';
+    // a DCQL query (OpenID4VP): its presence starts a verification during issuance (embedded authorization server)
+    dcql?: object;
+    tx_code?: TxCodeRequestV2;              // only for the pre-authorized_code grant
+    credentials: CredentialRequestV2[];
+    credentialMetadata?: StringKeyedObject;
 }

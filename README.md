@@ -7,7 +7,6 @@ For more details about the Sphereon code, please see: https://github.com/Sphereo
 
 Although it is called the 'veramo-agent', it no longer implements the veramo libraries, nor any Sphereon modules.
 
-
 ## Preface
 
 Please note the difference between `credentialId` and `credentialType`. The `credentialId` is the identifier used as key in the metadata `credential_configurations_supported` which defines a combination of claims/credentialSubject, display values and formats.
@@ -30,7 +29,7 @@ You can run a local dockerised Postgres database using the following command:
 
 ```bash
 docker run -t -i \
-    --env-file .env
+    --env-file .env \
     -v ./database:/var/lib/postgresql/data \
     -v <veramo-agent-path>/scripts/dbinit:/docker-entrypoint-initdb.d \
     -p 5432:5432 \
@@ -84,7 +83,7 @@ The Docker setup installs all dependencies inside the container, so there's no n
 
 ### File based configuration
 
-Configuration for the Issuer services is done inside the `conf/` directory. There are *5* entities that can be configured:
+Configuration for the Issuer services is done inside the `conf/` directory. There are *6* entities that can be configured:
 
 - `contexts`: linked data proof (`json-ld`) contexts that are served by this issuer.
 - `credentials`: credential configuration metadata for credential types that are reused between issuers
@@ -177,6 +176,38 @@ The `credentialSubject.key1.{}` way of specifying claims only supports single la
 
 The optional `origin` value allows some degree of mapping external claim data to a specific credential claim. It is a list of lists, each evaluated in turn and the first valid entry is used. It can be used when the external data retrieved from an `authorisation_code` flow returns a data structure that can change for users or situations. In `pre-authorized` code flow, the data structure is assumed to be defined up front by the front-end issuing application and can be set precisely to the fields the credential requires.
 
+An `origin` path can start with a source selector:
+
+- `#offer`: the data supplied in the `credentialDataSupplierInput` of the v1 `create-offer` call, or the `claims` of a credential in the v2 `create-offer` call. This is also the default if no `origin` is specified for a claim, and for origins without a selector.
+- `#accessData`: the user info retrieved from the authorization server.
+- `#deferred`: the claims supplied by the back-office for a deferred credential (see below).
+- `#any`: the first available value from `#deferred`, then `#accessData`, then `#offer`, using the same path in every source.
+
+The first origin that has a value wins; values are not merged. Please note that a configuration without an `origin` for a claim only reads the offer data.
+
+#### Deferred issuance
+
+A credential configuration can be issued in a deferred manner, as specified in section 8.3 and 9 of OpenID4VCI 1.0. Add a `deferred` attribute to the credential configuration:
+
+```json
+    "GenericCredential": {
+        ...
+        "deferred": {
+            "ttl": 3600,
+            "interval": 60
+        }
+    }
+```
+
+- `ttl`: the number of seconds that the wallet can collect the credential, at most 172800 (48 hours). The session is kept for as long as the transaction can be open.
+- `interval`: optional, the number of seconds the wallet should wait between requests to the deferred endpoint. The default is `ttl / 50`, with a minimum of 10 seconds and a maximum of one hour.
+
+The credential endpoint then always answers with a `202`, a `transaction_id` and an `interval`, also if the claims were already supplied in the `create-offer` call. When creating an offer for a deferred credential, the supplied claims can be incomplete. Deferred and non-deferred credentials can be mixed in one offer, each deferred credential has its own transaction. The back-office must supply the remaining claims (or just approve the credential) before the wallet can collect it at `<base URL>/<tenant>/deferred`. The `deferred_credential_endpoint` is only published in the metadata if at least one credential configuration has a `deferred` setting.
+
+The issuer refuses to start if a deferred credential configuration is incorrect: every claim of a deferred credential must specify its `origin` explicitly, and `ttl` and `interval` must be valid.
+
+The wallet is told to stop requesting a transaction (`credential_request_denied`) if the back-office denies it. The `transaction_id` is invalid after the credential has been collected, or after the `ttl`.
+
 Optionally, instead of extending a credential based on the credential identifier, an `extends` attribute can be configured that points to a specific credential identifier to extend. This can be used to allow an `vc+sd-jwt` or `dc+sd-jwt` credential to extend a regular `vc_jwt` credential. The metadata of the latter is automatically converted to the same metadata of the former:
 
 ```json
@@ -192,7 +223,7 @@ Optionally, instead of extending a credential based on the credential identifier
 
 The `extends` attribute is removed from the output if it was present.
 
-If a credential supports a status list implementation, the status list options can be configured in the metadata. Like with the `extends` attribute, this configuration is removed from the metadata output. Please see `docs/StatusList.md` for more information on statuslists.
+If a credential supports a status list implementation, the status list options can be configured in the metadata. Like with the `extends` attribute, this configuration is removed from the metadata output. Please see [doc/StatusLists.md](./doc/StatusLists.md) for more information on statuslists.
 
 ### Issuers
 
@@ -202,11 +233,11 @@ The issuer configurations are specified in the `conf/issuer/` directory. Each en
 {
     "name": "human readable name for the issuer",
     "baseUrl": <base path for this issuer service>,
-    "clientId": <optional string client id to be used for authorization code flow>,
     "clientSecret": <optional string client secret to be used for authorization code flow>,
     "adminToken": <string bearer token to be passed by front end agents to create credential offers>,
-    "authorizationEndpoint": <optional authorization server to be used for authorized code flow>,
-    "tokenEndpoint": <optional token endpoint to be used for authorized code flow>,
+    "authorizationEndpoint": <optional external authorization server to be used for authorized code flow>,
+    "embeddedAuthorizationServer": <optional embedded authorization server, see doc/DESIGN_PRESENTATION_DURING_ISSUANCE.md>,
+    "preAuthorizedCode": <optional boolean, default true. false: the issuer is not an authorization server for the pre-authorized_code flow>,
     "did": <did alias or did name as configured in the did section above>,
     "key": "optional key reference index, like '0', depending on the identifier key format",
     "usesNonces": <boolean value that indicates if a nonce value should be generated in the access token>
@@ -246,12 +277,25 @@ In that case, set the `SINGLE_TENANT` environment variable. This will force the 
 
 ## Basic Code Setup
 
-Main entry script is `src/agent.ts`
-This script first creates a basic Veramo Agent instance with all the relevant plugins. Then it configures the plugins by reading the json configurations. Finally it sets up the Express server to serve the various endpoints.
+Main entry script is `src/main.ts`. It reads the json configurations, instantiates the issuers and sets up the Express server to serve the various endpoints.
 
 ## Authorization Code Flow
 
-The Issuer application does _not_ implement an AS server. Instead, it allows configuration of an external authorization server using the `authorizationEndpoint` configuration parameter. This value is automatically transferred to the correct `metadata` parameter.
+The issuer can use several authorization servers (AS) at the same time. The `authorization_servers` of the issuer metadata lists:
+
+1. the issuer itself (`baseUrl`), the AS of the `pre-authorized_code` flow (unless `preAuthorizedCode` is `false`);
+2. the embedded authorization server (`baseUrl/as`), if `embeddedAuthorizationServer.enabled`;
+3. the external authorization server, if `authorizationEndpoint` is configured.
+
+Every credential offer names the AS that the wallet has to use in the `authorization_server` of its grant. The issuer chooses it, a caller of the API cannot:
+
+| Offer | `authorization_server` |
+|---|---|
+| `pre-authorized_code` | the issuer (`baseUrl`) |
+| `authorization_code` with a `dcql` query (presentation during issuance) | the embedded AS; an error if it is not enabled |
+| other `authorization_code` | the external AS; else the embedded AS; else an error |
+
+The access token has to be issued by the AS of the offer of its session (`iss`). The pre-authorized access token is a RFC 9068 token with `iss` and `aud` set to the `baseUrl`, but without `sub` and `client_id`.
 
 The issuer tries to decode the `access token` returned by the AS to see if it implements RFC 9068: https://datatracker.ietf.org/doc/html/rfc9068
 This RFC describes how to encode the `access token` as a `JWT` so that the consumer RP can both establish the authenticity and does not need to
@@ -264,170 +308,21 @@ on the authenticated user, like requesting a user info endpoint or further disse
 
 ## Endpoints
 
-Routing and endpoints are set in various places. There are two kinds of endpoints: OpenID4VC endpoints and API endpoints.
+Routing and endpoints are set in various places. The endpoints are documented separately:
 
-### OpenID4VC endpoints
+- [doc/OPENID4VCI.md](./doc/OPENID4VCI.md): the OpenID4VCI endpoints used by wallets (credential, deferred, nonce, credential offer and the well-known metadata)
+- [doc/APIV1.md](./doc/APIV1.md): the original back-end API for the front-end issuer (`create-offer`, `check-offer`, `list-credentials`)
+- [doc/APIV2.md](./doc/APIV2.md): the v2 back-end API (`create-offer` for multiple credentials, and the deferred credential endpoints)
 
-The current setup supports the basic endpoints:
+The status list implementation is described in [doc/StatusLists.md](./doc/StatusLists.md).
 
-- `<base URL>/<tenant>/credentials`
-- `<base URL>/<tenant>/nonce`
-- `<base URL>/<tenant>/get-credential-offer/:id`
-
-It also supports publishing well-known metadata:
-
-- `<base URL>/<tenant>/.well-known/openid-credential-issuer`
-- `<base URL>/<tenant>/.well-known/openid-configuration`
-- `<base URL>/<tenant>/.well-known/oauth-authorization-server`
-- `<base URL>/.well-known/openid-credential-issuer/<tenant>`
-- `<base URL>/.well-known/openid-configuration/<tenant>`
-- `<base URL>/.well-known/oauth-authorization-server/<tenant>`
-- `<base URL>/<tenant>/.well-known/did.json`
-
-The 1st and 4th URL serves the JSON metadata that configures the issuer tenant. It publishes the available credential templates and the URI to the endpoint that issues the actual credential. The metadata is constructed from the configured `metadata` configuration and any referenced `credential` and `vct` metadata. Credential types are extended automatically to include applicable attributes. Specifically, the `credentialSubject` attribute is converted to the `claims` attribute. For historical reasons, the `credentialSubject` entry is still used in the metadata specification.
-
-The `openid-configuration` and `oauth-authorization-server` are published to configure the token endpoint in the pre-authorized_code flow. The UniMe wallet
-requires the latter and does not read the former. Sphereon reads both. The spec does not require any of them, but then the token endpoint is undefined.
-
-The `did.json` endpoint provides a convenient way of publishing the `did:web` configuration. Configure a reverse proxy on the actual domain of the 
-`did:web` to point to this endpoint to complete the configuration. In this way, the agent contains both public and private keys and if the agent
-is restarted or keys refreshed, the key configuration will be correct. The did specification also allows a `path` setting to host the did directly on the root of the issuer, which is convenient if there is only one actual issuer tenant. Make sure to include the `:.well-known` subpath if you want to use the did directly on the published path above, e.g.: `did:web:example.com:tenant:.well-known` for the did on `https://example.com/tenant`.
-
-The `credentials` URL serves the credential, provided the user can supply the required data (grant, authorization code, pin, credential reference, etc.). This follows the basic OpenID4VC specification. During this call, the issuer will perform a `credential_callback` if such a callback was specified in the `create-offer` request (described below). Also, for `authorization_code` flow, the issuer will establish some basic user info for the authorized user, which can be used in the creation of credentials. An implementation of this is in the `EduID` and `EduIDEntitlement` credentials.
-
-The `nonce` POST endpoint serves a fresh nonce value, not linked to any session. This follows the basic OpenID4VC specification version 1.16 and higher.
-
-The `get-credential-offer` endpoint serves the actual credential issuance offer, which is referenced by URI in the QR code.
-
-Please note that in case of a `SINGLE_TENANT` configured environment, alle the `<tenant>/` path elements above are removed. In this case, there is no tenant name or path element.
-
-### API endpoints
-
-The setup has the following endpoints for the back-end API:
-
-- POST `<base URL>/<tenant>/api/create-offer`
-- POST `<base URL>/<tenant>/api/check-offer`
-- POST `<base URL>/<tenant>/api/list-credentials`
-
-See the note in the previous paragraph about `SINGLE_TENANT` configurations.
-
-#### Create Offer
-
-POST `<base URL>/<tenant>/api/create-offer`
-
-This creates a credential offer in the agent database based on supplied credentials. The request contains a JSON object:
-
-```json
-{
-    "credentials": ["array of string"],
-    "grants": {
-        "authorization_code": {
-            "issuer_state": "generate"
-        },
-        "urn:ietf:params:oauth:grant-type:pre-authorized_code": {
-            "pre-authorized_code": "string",
-            "tx_code": boolean|object, optional,
-        }
-    },
-    "credentialDataSupplierInput": "object containing key-value pairs of the credentials",
-    "credentialMetadata": "object containing key-value pairs defining the metadata",
-    "credential": "optional object containing a prefilled credential, including metadata",
-    "credential_callback": "optional URL to use as a callback to retrieve a prefilled credential"
-}
-```
-
-Please note the following:
-
-- the example displays two grant types. Usually only one of either is used (the front-end-issuer either has authenticated the user, or it has not). Which one is used depends on the configuration of the back-end-issuer for this specific instance
-- in the `authorization_code.issuer_state` field, the example shows the content `generate`. This is a special-case situation forcing the back-end-issuer to generate a new state value. Preferably the `issuer_state` was left undefined, but that may cause the entire `authorization_code` object to be removed by intermediate libraries. To prevent that, fill the `issuer_state` with the special `generate` value. The response will provide the actual state identifier used for this session
-- the `pre-authorized_code` field can be undefined, in which case a random code is generated. However, to prevent the grant containing an empty object which may be removed by the intermediate libraries, the value `generate` may be used to force a random state code, like for the `issuer_state` above
-- the `tx_code` can either be a boolean or an object. If boolean `true`, a pin code of 4 digits is generated. If it is an object, it is expected to contain attributes `input_mode` ('text' or 'numeric' (default)), `length` (default: 4) and a `description` (default 'PIN'). This information is transferred to the `tx_code` attribute of the pre-auth-grant in the offer and used to generate the `txCode` return value. Front end issuers can indicate a transaction code of their own by supplying that code in the `code` field, which is then reflected back to the caller.
-
-The `credentialMetadata` attribute can contain settings about the credential. Currently the following are defined:
-
-- `expiration`: a number representing the seconds after issuance date for the credential to expire. For backwards compatibility, the credential data fields `_exp` and `_ttl` are also supported and serve the same purpose
-- `enableStatusLists`: a boolean field that enables or disables generating status list information. If not specified, but status lists are configured for an issuer, status list information is generated. Set this field explicitely to `false` to prevent generating status list information
-- `evidence`: an object or array containing evidence data as specified in the VCDM spec.
-
-The `credential` attribute can contain a full credential, some values of which will be overwritten or adjusted by the issuer during issuance. Fields that are supported, like `@context`, `name`, `description`, `credentialStatus` or `evidence`, will be interpreted if possible, other fields (including `credentialSubject`) are transported verbatim to the output. This feature is mainly used for the `VCDM` `OpenBadgeCredential` implementation and should be used with care.
-
-The `credential_callback` attribute is used to validate an `authorization_code` flow authorization against an external application, which can then return a full credential or an error status. In case of errors (unauthorized, not found), the credential issuance is halted. If the callback succeeds, the return value is used as the preset credential following the same implementation as if the credential was set using the `credential` attribute described above.
-
-The `credential_callback` is done using a `POST` call and contains a JSON object (content type `application/json`) with a variety of parameters depending on the authorization flow that was performed. In case of a `pre-authorized_code` flow, the parameters contain the `issuer_state`, issuance and expiration information of the access token. In case of a `authorization_code` flow, the parameters contain all accumulated data as received from the Authorization Server, which depends heavily on the implementation of the AS.
-
-The create-offer call finally returns a JSON object containing the following elements:
-
-```json
-{
-    "uri": "the uri that is presented to the wallet as QR code or clickable link (same-device)",
-    "txCode":  "optional, transaction code that needs to be shared out of band",
-    "id": "a string value containing the unique identifier with which to refer to this offer/session"
-}
-```
-
-At the moment, the agent by default creates a 4 digit random code when a tx_code is requested.
-
-#### Check Offer
-
-POST `<base URL>/<tenant>/api/check-offer`
-
-The `check-offer` endpoint allows the front-end to poll the status of the offer. Depending on the state of the offer, the front-end
-can display different messages or adjust the interface. The offer `id` is the `id` value returned in the `create-offer` call.
-The `id` is passed in a POST operation as a json object: `{"id":"<code>"}`
-
-This returns an object as follows:
-
-```json
-{
-    "createdAt":1725356725408,
-    "lastUpdatedAt":1725356725408,
-    "status":"CREDENTIAL_ISSUED",
-    "requests": <optional request data object>,
-    "uuid": "64d37ada-5671-4d6d-b74d-031b925fe2c9"
-}
-```
-
-The `requests` object contains data about the incoming and outgoing requests for this issuance state. It can be used for debugging purposes to see what kind of data flows in and out in the protocol.
-
-The `uuid` attribute is only available when an actual credential was issued to the wallet. This `uuid` can be used by the issuing front-end
-to interface with the revocation api as defined below.
-
-The following statuses are currently supported:
-
-- OFFER_CREATED: the offer has been created, but it has not been consumed yet
-- OFFER_URI_RETRIEVED: the offer URI endpoint was called, which normally indicates the QR code was scanned
-- ACCESS_TOKEN_CREATED: the wallet requested and received an access token
-- CREDENTIAL_ISSUED: the credential offer was successfully completed
-
-The time between `ACCESS_TOKEN_CREATED` and `CREDENTIAL_ISSUED` is very short in practice. There is no manual
-step in between. Between `OFFER_URI_RETRIEVED` and `ACCESS_TOKEN_CREATED`, the wallet requests both the
-transaction code and asks the user if he/she wants to accept the credential.
-
-#### List Credentials
-
-POST `<base URL>/<tenant>/api/list-credentials`
-
-This endpoint allows an issuer to list the credentials it has previously issued. This can be used in use cases where
-users want to revoke or re-issue/refresh credentials. The POST data field can contain filtering options (each field
-is optional):
-
-```json
-{
-    "state": <filter based on a specific unique state previously used by the front-end issuer>,
-    "holder": <filter based on the holder key specification of a wallet>,
-    "credential": <filter based on the credential type>,
-    "primaryId": <filter based on the primary identifier for a credential (the unique user id)>,
-    "issuanceDate": <filter on credentials issued after this date>
-}
-```
-
-The endpoint returns a JSON array containing all the database rows, including the database id, the uuid, claims, status-list information
-and saved-updated dates. This data can be used in further interactions.
+Please note that in case of a `SINGLE_TENANT` configured environment, all the `<tenant>/` path elements in the documented paths are removed.
 
 # Changelog / Release Notes
 
 | Version | Commit  | Date       | Comment             |
 | ------- | ------- | ---------- | ------------------- |
+|         | 05baee7 | 2026-11-03 | Added `/deferred` endpoint and API v2 calls to release and set credential data |
 |         | dd8595b | 2026-03-03 | `credential_callback` now returns the full access token claim set |
 |         | 55f3438 | 2026-01-27 | Added `/api/export` endpoint to export a zip archive with ready to use configuration files |
 |         | 3082911 | 2026-01-08 | Allowing the `claims` attribute in `credentialSubject` to directly set the 'new' `claims` data for metadata |

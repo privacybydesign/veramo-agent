@@ -33,6 +33,15 @@ export const credentialEndpointRateLimiter = rateLimit({
     skip: () => DISABLE_RATE_LIMITS,
 });
 
+// /deferred: requires a valid access token and builds the credential once, but wallets poll it
+// repeatedly during the lifetime of a transaction, so keep it separate from the credential endpoint.
+export const deferredEndpointRateLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
 // /nonce: fully unauthenticated and persists new server-side nonce state on every
 // call, so an unthrottled client can otherwise grow that storage without bound.
 export const nonceEndpointRateLimiter = rateLimit({
@@ -105,4 +114,32 @@ export const publicMetadataRateLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
     skip: () => DISABLE_RATE_LIMITS,
+});
+
+// Embedded authorization server: the challenge endpoint is polled by wallets, so the limit is higher than
+// for the token endpoint. The first limiter counts per client address, the second per auth_session or
+// issuer_state, so a leaked value cannot be used to hammer the verifier from many addresses.
+export const asChallengeRateLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+export const asChallengeSessionRateLimiter = rateLimit({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (request) => {
+        const body = request.body ?? {};
+        const key = typeof body.auth_session == 'string' ? body.auth_session.split('.')[0]
+            : typeof body.issuer_state == 'string' ? body.issuer_state : '';
+        // without a usable value this limiter does not apply: the per-address limiter does
+        return key.length ? 'as:' + key : 'as-none';
+    },
+    skip: (request) => {
+        const body = request.body ?? {};
+        return typeof body.auth_session != 'string' && typeof body.issuer_state != 'string';
+    },
 });

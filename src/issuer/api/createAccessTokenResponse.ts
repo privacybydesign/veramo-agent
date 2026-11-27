@@ -6,16 +6,18 @@ import { CredentialOfferStatus } from 'types/api.js';
 import { JWT } from '#root/jwt/JWT';
 import { Session } from '#root/database/entities/index';
 import moment from 'moment';
+import { createUniqueId } from '#root/utils/createUniqueId';
+import { CredentialDataSet } from '#root/types/internal';
 
 const TOKEN_EXPIRY = 30 * 60 * 1000;
 
-export async function createAccessTokenResponse(issuer:Issuer, session:Session, jkt?:string) {
+export async function createAccessTokenResponse(issuer:Issuer, session:Session, jkt?:string, tokenClaims?:{[x:string]:any}) {
     debug("creating access token");
     session.data.lastUpdatedAt = Date.now();
     session.data.status = CredentialOfferStatus.ACCESS_TOKEN_CREATED;
     await issuer.storeSession(session);
 
-    const access_token = await generateAccessToken(issuer, session, jkt);
+    const access_token = await generateAccessToken(issuer, session, jkt, tokenClaims);
     debug("signed token", access_token);
     // https://www.rfc-editor.org/rfc/rfc6749.html#section-5
     // https://www.rfc-editor.org/rfc/rfc9449#section-6 - token_type is 'DPoP' when the token
@@ -29,19 +31,19 @@ export async function createAccessTokenResponse(issuer:Issuer, session:Session, 
 
     // ID-1: 6.2: authorization_details is required if it was sent earlier on, optional
     // if not.
-    // For now: we set this to the one credentialId of this interaction
-    // TODO: update this when we want to support multiple credential issuance
-    // We need to find all the datasets linked to the same credentialId and list these here,
-    // so the wallet can potentially loop through these identifiers and request multiple
-    // credentials in a row
-    // We set the credential_configuration_id to the same value for lack of better ids
+    // List every credential_configuration_id of this session, with the identifiers of its data sets,
+    // so the wallet can loop through these and request each credential in turn.
     // Please note: credential_configuration_id must be present in metadata.credential_configurations_supported
     // whereas credential_identifiers are a transaction-unique set of dataset-identifiers
-    response.authorization_details = [{
+    const identifiers:{[configId:string]:string[]} = {};
+    for (const dataSet of Object.values(session.data.credentialDataSets ?? {}) as CredentialDataSet[]) {
+        (identifiers[dataSet.credentialId] ??= []).push(dataSet.id);
+    }
+    response.authorization_details = Object.entries(identifiers).map(([configId, ids]) => ({
         "type": "openid_credential",
-        "credential_identifiers": [session.data.credentialId],
-        "credential_configuration_id": session.data.credentialId
-    }];
+        "credential_identifiers": ids,
+        "credential_configuration_id": configId
+    }));
 
     // in ID2, nonces are retrieved from a nonce endpoint
     // DIIPv4 compliance: remove this section
@@ -55,23 +57,29 @@ export async function createAccessTokenResponse(issuer:Issuer, session:Session, 
     return response
 }
   
-async function generateAccessToken(issuer:Issuer, session:Session, jkt?:string)
+async function generateAccessToken(issuer:Issuer, session:Session, jkt?:string, tokenClaims?:{[x:string]:any})
 {
     debug("generating access token");
     // JWT uses seconds for iat and exp
     const iat = new Date().getTime() / 1000
     const exp = iat + TOKEN_EXPIRY;
     const jwt:JWT = new JWT();
-    jwt.header = { typ: 'JWT' };
+    // RFC 9068: JWT profile for OAuth 2.0 access tokens. Pre-authorized sessions have no user or client, so
+    // sub and client_id are not set
+    jwt.header = { typ: 'at+jwt' };
     jwt.payload = {
             iat,
             exp,
-            iss: issuer.did!.did,
+            iss: issuer.options.baseUrl,   // the issuer is the authorization server of the pre-authorized_code flow
+            aud: issuer.options.baseUrl,
+            jti: createUniqueId(),
             issuer_state: session.state,
             token_type: jkt ? 'DPoP' : 'Bearer',
             // https://www.rfc-editor.org/rfc/rfc9449#section-6 - binds the access token to the
             // DPoP proof key by embedding its JWK thumbprint
             ...(jkt && { cnf: { jkt } }),
+            // claims of the embedded authorization server (iss, aud, exp, jti, client_id) replace the defaults
+            ...(tokenClaims ?? {}),
     };
     debug("access token content", jwt);
     return await issuer.signToken(jwt);

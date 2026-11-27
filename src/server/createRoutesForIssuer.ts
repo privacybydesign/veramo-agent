@@ -6,7 +6,9 @@ import { Issuer } from "issuer/Issuer.js";
 import {
     accessToken,
     createCredentialOfferResponse,
+    createCredentialOfferV2Response,
     getCredential,
+    getDeferredCredential,
     getCredentialOffer,
     getIssueStatus,
     getMetadata,
@@ -17,6 +19,7 @@ import {
     revokeCredential,
     getNonce,
     notification,
+    deferredTransactions,
 } from './endpoints/index.js'
 import { getOIDFed } from './endpoints/getOIDFed.js';
 import { revokeIndex } from './endpoints/statuslists/revokeIndex.js';
@@ -25,6 +28,7 @@ import { setStatus } from './endpoints/statuslists/setStatus.js';
 import { getStatusListCredential } from './endpoints/statuslists/getStatusListCredential.js';
 import { isSingleTenant } from '#root/utils/isSingleTenant';
 import { adminAuthRateLimiter } from './rateLimiters.js';
+import { createRoutesForEmbeddedAS } from '#root/as/routes';
 
 export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnownRouter:Router) {
     // to support internal redirections, we set up the routes on <base-url>/<tenant>/...
@@ -54,8 +58,11 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
     issuer.router!.use('/api', adminAuthRateLimiter);
 
     // OAuth endpoint to handle the consumation of an authorization (pre-authorized) token
-    debug("adding token path");
-    accessToken(issuer, tokenPath);
+    // only if the issuer is the authorization server of the pre-authorized_code flow
+    if (issuer.usesPreAuthorizedCode()) {
+        debug("adding token path");
+        accessToken(issuer, tokenPath);
+    }
 
     if (issuer.usesNonces) {
         // nonce endpoint (ID2)
@@ -74,14 +81,25 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
     }
   
     // This endpoint serves the /.well-known/openid-configuration document.
-    // Always published: even when an external AS is configured for the authorization_code
-    // flow, we may still act as our own AS for pre-authorized_code flow sessions.
+    // Published when the issuer is the authorization server of the pre-authorized_code flow, also when an
+    // external or embedded AS exists for the authorization_code flow.
     // the tokenpath is an external URL, so gets prepended with the baseUrl, but not the basePath
-    getOpenidConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
-    getOAuthConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
+    if (issuer.usesPreAuthorizedCode()) {
+        getOpenidConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
+        getOAuthConfiguration(issuer, basePath, issuer.options.baseUrl + tokenPath, isSingleTenant() ? null : wellKnownRouter);
+    }
   
+    // embedded authorization server (verification during issuance), only if configured
+    createRoutesForEmbeddedAS(issuer, basePath, wellKnownRouter, !!isSingleTenant());
+
     // this is hard coded in the Issuer when metadata is generated
     getCredential(issuer, '/credentials');
+
+    // this is hard coded in the Issuer when metadata is generated, and only published if
+    // there are credentials that are issued in a deferred manner
+    if (issuer.hasDeferredCredentials()) {
+        getDeferredCredential(issuer, '/deferred');
+    }
 
     // this is hard coded in the Issuer when metadata is generated
     notification(issuer, '/notification');
@@ -100,6 +118,12 @@ export async function createRoutesForIssuer(issuer:Issuer, app:Express, wellKnow
 
     // allow the front-end issuer to revoke or unrevoke specific credentials based on an id
     revokeCredential(issuer, '/api/revoke-credential');
+
+    // back-office API (v2) to create a credential offer for one or more credentials
+    createCredentialOfferV2Response(issuer, '/api/v2/create-offer', '/get-credential-offer');
+
+    // back-office API (v2) to supply or deny the claims of deferred credentials
+    deferredTransactions(issuer, '/api/v2/deferred');
 
     const statusListOptions = issuer.findAllStatusLists();
     for (const slo of statusListOptions) {

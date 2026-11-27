@@ -1,4 +1,4 @@
-import { vi, expect, test, beforeEach } from 'vitest';
+import { vi, expect, test, beforeEach, afterEach } from 'vitest';
 import type { Express, Router } from 'express';
 import { Issuer } from '../../issuer/Issuer.js';
 import { createRoutesForIssuer } from '../createRoutesForIssuer.js';
@@ -7,7 +7,10 @@ import { MetadataConfiguration } from '#root/types/api/metadata';
 import {
     accessToken,
     createCredentialOfferResponse,
+    createCredentialOfferV2Response,
     getCredential,
+    getDeferredCredential,
+    deferredTransactions,
     getCredentialOffer,
     getIssueStatus,
     getMetadata,
@@ -28,7 +31,10 @@ import { getStatusListCredential } from '../endpoints/statuslists/getStatusListC
 vi.mock('../endpoints/index.js', () => ({
     accessToken: vi.fn(),
     createCredentialOfferResponse: vi.fn(),
+    createCredentialOfferV2Response: vi.fn(),
     getCredential: vi.fn(),
+    getDeferredCredential: vi.fn(),
+    deferredTransactions: vi.fn(),
     getCredentialOffer: vi.fn(),
     getIssueStatus: vi.fn(),
     getMetadata: vi.fn(),
@@ -63,6 +69,23 @@ const wellKnownRouter = { use: vi.fn() } as unknown as Router;
 
 beforeEach(() => {
     vi.clearAllMocks();
+    // these tests describe a multi tenant setup, independent of the SINGLE_TENANT setting in .env
+    vi.stubEnv('SINGLE_TENANT', '');
+});
+
+afterEach(() => {
+    vi.unstubAllEnvs();
+});
+
+test('uses the root path and the root router in a single tenant setup', async () => {
+    vi.stubEnv('SINGLE_TENANT', 'true');
+    const issuer = createIssuer();
+    const app = createApp();
+
+    await createRoutesForIssuer(issuer, app, wellKnownRouter);
+
+    expect(app.use).toHaveBeenCalledWith('/', issuer.router);
+    expect(getMetadata).toHaveBeenCalledWith(issuer, '/', null);
 });
 
 test('creates the always-on endpoints with the right paths', async () => {
@@ -84,6 +107,30 @@ test('creates the always-on endpoints with the right paths', async () => {
     expect(getIssueStatus).toHaveBeenCalledWith(issuer, '/api/check-offer');
     expect(listCredentials).toHaveBeenCalledWith(issuer, '/api/list-credentials');
     expect(revokeCredential).toHaveBeenCalledWith(issuer, '/api/revoke-credential');
+    expect(createCredentialOfferV2Response).toHaveBeenCalledWith(issuer, '/api/v2/create-offer', '/get-credential-offer');
+    expect(deferredTransactions).toHaveBeenCalledWith(issuer, '/api/v2/deferred');
+    // no deferred credentials configured
+    expect(getDeferredCredential).not.toHaveBeenCalled();
+});
+
+test('registers the deferred endpoint only when a credential is issued in a deferred manner', async () => {
+    const deferredIssuer = createIssuer({}, {
+        credential_configurations_supported: {
+            slow: {
+                format: 'dc+sd-jwt',
+                deferred: { ttl: 3600 },
+                credential_definition: { type: ['Slow'], claims: [{ path: ['name'], origin: [['#deferred', 'name']] }] },
+            },
+        },
+    });
+    await createRoutesForIssuer(deferredIssuer, createApp(), wellKnownRouter);
+    expect(getDeferredCredential).toHaveBeenCalledWith(deferredIssuer, '/deferred');
+
+    vi.clearAllMocks();
+
+    const plainIssuer = createIssuer();
+    await createRoutesForIssuer(plainIssuer, createApp(), wellKnownRouter);
+    expect(getDeferredCredential).not.toHaveBeenCalled();
 });
 
 test('registers the nonce endpoint only when the issuer uses nonces', async () => {

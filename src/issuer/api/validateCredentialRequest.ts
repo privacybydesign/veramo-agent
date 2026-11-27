@@ -4,13 +4,14 @@ import { verifyAccessTokenJWT } from '#root/issuer/lib/verifyAccessTokenJWT';
 import { Request } from 'express'
 import { Issuer } from '#root/issuer/Issuer';
 import { CredentialOfferStatus, ErrorCodes } from '#root/types/api';
-import { ApiState } from '#root/types/internal';
+import { ApiState, CredentialDataSet } from '#root/types/internal';
 import { CredentialRequest } from '#root/types/specification/credential_request';
 import { JWT } from '#root/jwt/JWT';
 import { getHolderKeyFromProofJwt } from '#root/issuer/lib/getSignatureKeyFromProofJwt';
 import { Session } from '#root/database/entities/index';
 import moment from 'moment';
 import { DPoPNonceRequiredError, validateDPoPProof } from '#root/issuer/lib/validateDPoPProof';
+import { expectedTokenIssuers } from '#root/utils/expectedTokenIssuers';
 import { sessionUsesAuthorisationCodeFlow } from '#root/utils/sessionUsesAuthorisationCodeFlow';
 import { MAX_BATCH_SIZE } from '#root/environment';
 
@@ -39,33 +40,22 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
         const stateid = data?.payload?.issuer_state;
         session = await issuer.getSessionByState(stateid);
 
-        // which flow applies is a property of this session's credential offer, not of the
-        // issuer's overall configuration (both flows can be configured to exist simultaneously).
-        // If we could not find a session yet, fall back to the issuer-level capability check.
-        const usesAuthorisationCodeFlow = session ? sessionUsesAuthorisationCodeFlow(session) : issuer.usesAuthorisedCodeFlow();
+        // the token must come from the authorization server that this session's credential offer names. We never
+        // accept a token for a session without one (fail closed)
+        if (!session || !expectedTokenIssuers(session).includes(data?.payload?.iss)) {
+            debug("invalid because the access token issuer is not the authorization server of the offer", data?.payload?.iss);
+            error.error = ErrorCodes.INVALID_REQUEST;
+            error.description = "Unauthorised";
+            return error;
+        }
 
-        if (usesAuthorisationCodeFlow) {
-            // the issuer should be one of our authorization servers
-            if (issuer.options?.authorizationEndpoint !== data?.payload?.iss) {
-                debug("invalid because the access token issuer is not in our AS list", data!.payload.iss);
-                error.error = ErrorCodes.INVALID_REQUEST;
-                error.description = "Unauthorised";
-                return error;
-            }
-        }
-        else  {
-            // we must have issued it ourselves
-            if (data?.payload?.iss != issuer.did?.did) {
-                debug("invalid because the token issuer is not our did", data?.payload?.iss);
-                error.error = ErrorCodes.INVALID_REQUEST;
-                error.description = "Unauthorised";
-                return error;
-            }
-        }
+        const usesAuthorisationCodeFlow = sessionUsesAuthorisationCodeFlow(session);
 
         if (session) {
             debug('setting session access data to ', data?.payload);
-            session.data.accessData = data?.payload;
+            // merge the verified claims of a presentation during issuance (keyed by DCQL credential id) with the
+            // token claims. The token claims come last: presented data can never replace them
+            session.data.accessData = { ...(session.data.presentationData ?? {}), ...(data?.payload ?? {}) };
         }
 
         if (!usesAuthorisationCodeFlow && session && session.data?.status != CredentialOfferStatus.ACCESS_TOKEN_CREATED) {
@@ -91,7 +81,7 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
     // cnf.jkt claim, so this only applies to the pre-authorized code flow, and only when the
     // wallet actually used DPoP when requesting the access token.
     const jkt = tokenPayload?.cnf?.jkt;
-    if (!sessionUsesAuthorisationCodeFlow(session) && jkt) {
+    if ((!sessionUsesAuthorisationCodeFlow(session) || issuer.usesEmbeddedAS()) && jkt) {
         const dpopHeader = request.header('DPoP');
         try {
             const result = await validateDPoPProof(issuer, dpopHeader, 'POST', issuer.options.baseUrl + '/credentials', jwt);
@@ -113,52 +103,12 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
     session.data.status = CredentialOfferStatus.CREDENTIAL_REQUEST_RECEIVED;
     await issuer.storeSession(session);
 
-    let credentialDataSet:any = null;
-    // spec ID-1: 8.2: credential_identifier: REQUIRED when an Authorization Details of type
-    // openid_credential was returned from the Token Response. 
-    if (request.body.credential_identifier) {
-        credentialDataSet = session.data?.credentialDataSets[request.body.credential_identifier];
-    }
-    // spec ID-1: 8.2: credential_configuration_id: REQUIRED if a credential_identifiers
-    // parameter was not returned from the Token Response as part of the authorization_details parameter.
-    // As we return authorization_details, this should never happen for proper wallets
-    // However, for authorization_code flow, we do not control the token endpoint, so we do not know what
-    // the wallet ay decide.
-    else if(request.body.credential_configuration_id) {
-        credentialDataSet = session.data?.credentialDataSets[request.body.credential_configuration_id];
-    }
-
-    // the following overrides if the credential request refers to incorrect datasets
-    // However, this only works if we have a single credential to hand out
+    const credentialDataSet = findCredentialDataSet(session, request.body);
     if (!credentialDataSet) {
-        // TODO: update this when we want to support multiple credential issuance
-        // see if we have a set based on the session credential id
-        credentialDataSet = session.data?.credentialDataSets[session.data?.credentialId];
-    }
-
-    if (!credentialDataSet) {
-    // TODO: update this when we want to support multiple credential issuance
-        // if we did not get a credentialDataSet back, we rely on the id as documented in the session
-        const credentialConfiguration = issuer.getCredentialConfiguration(session.data?.credentialId);
-        if (credentialConfiguration === null) {
-            debug("invalid because credential configuration could not be found", session.data?.credentialId);
-            error.error = ErrorCodes.INVALID_REQUEST;
-            error.description = "Credential type not found";
-            return error;
-        }
-
-        if (request.body.format && credentialConfiguration.format !== request.body.format) {
-            debug("invalid because the requested format is not supported by this credential", request.body.format);
-            error.error = ErrorCodes.INVALID_REQUEST;
-            error.description = "Requested credential format not supported";
-            return error;
-        }
-        debug("Creating request credential data set based on session data instead of request data");
-        credentialDataSet = {
-            credentialId: session.data?.credentialId,
-            credentialConfiguration,
-            data: {} // we hope the credential implementation can determine the required values itself
-        };
+        debug("invalid because no data set could be found for the request", request.body.credential_identifier, request.body.credential_configuration_id);
+        error.error = ErrorCodes.INVALID_CREDENTIAL_REQUEST;
+        error.description = "Credential type not found";
+        return error;
     }
 
     const proofResults = await validateCredentialRequestProofs(issuer, session, request.body);
@@ -174,6 +124,37 @@ export async function validateCredentialRequest(issuer:Issuer, request:Request)
     error.data = { session, credentialDataSet, proofResults: proofResults.data};
     debug("credential request is valid");
     return error;
+}
+
+/**
+ * Find the data set a credential request refers to. A session can contain multiple data sets,
+ * so we never guess when the request is ambiguous.
+ */
+function findCredentialDataSet(session:Session, body:CredentialRequest):CredentialDataSet|null
+{
+    const dataSets = Object.values(session.data?.credentialDataSets ?? {}) as CredentialDataSet[];
+
+    // Note: spec 1.0 8.2 states that credential_identifier and credential_configuration_id MUST NOT be
+    // used together. This implementation is lenient: if both are present, the credential_identifier
+    // takes precedence and the credential_configuration_id is ignored, instead of rejecting the request.
+
+    // spec ID-1: 8.2: credential_identifier: REQUIRED when an Authorization Details of type
+    // openid_credential was returned from the Token Response.
+    if (body.credential_identifier) {
+        return dataSets.find((ds) => ds.id === body.credential_identifier) ?? null;
+    }
+
+    // spec ID-1: 8.2: credential_configuration_id: REQUIRED if a credential_identifiers
+    // parameter was not returned from the Token Response as part of the authorization_details parameter.
+    // For authorization_code flow, we do not control the token endpoint, so we do not know what
+    // the wallet may decide. Take the first data set of this configuration that was not yet issued.
+    if (body.credential_configuration_id) {
+        const matching = dataSets.filter((ds) => ds.credentialId === body.credential_configuration_id);
+        return matching.find((ds) => !ds.issued) ?? matching[0] ?? null;
+    }
+
+    // without any reference, the request is only unambiguous for a session with a single data set
+    return dataSets.length === 1 ? dataSets[0] : null;
 }
 
 async function validateCredentialRequestProofs(issuer:Issuer, session:Session, credentialRequest:CredentialRequest): Promise<ApiState>

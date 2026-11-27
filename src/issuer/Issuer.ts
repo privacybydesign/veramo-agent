@@ -5,7 +5,7 @@ import moment from "moment";
 import { Router } from "express";
 import { StatusListCredentialData, StatusListOptions } from "#root/types/internal/statuslists";
 import { StatusListRevocationState } from '#root/types/api';
-import { IssuerConfiguration } from '#root/types/internal';
+import { CredentialDataSet, IssuerConfiguration } from '#root/types/internal';
 import { JWT } from '#root/jwt/JWT';
 import { ExtendableCredentialConfiguration, MetadataConfiguration } from '#root/types/api/metadata';
 import { CredentialConfiguration, CredentialConfigurations,  Metadata } from '#root/types/specification/metadata';
@@ -26,6 +26,9 @@ import { retrieveServerMetadata } from './lib/retrieveServerMetadata.js';
 import { convertConfigToVCDM } from './lib/convertConfigToVCDM.js';
 import { convertConfigToDCSDJWT, convertConfigToVCSDJWT } from './lib/convertConfigToSDJWT.js';
 import { StatusListType } from '#root/statusLists/StatusListType';
+import { DeferredSettings, getDeferredSettings, validateDeferredConfiguration } from './lib/deferredConfiguration.js';
+import { EmbeddedASSettings, getEmbeddedASSettings, validateAuthorizationServerConfiguration, validateEmbeddedASConfiguration } from '#root/as/config';
+import { AuthorizationServerSelectionError } from './lib/AuthorizationServerSelectionError.js';
 
 export class Issuer
 {
@@ -40,6 +43,8 @@ export class Issuer
     public nonceStates:NonceManager;
     public dpopNonceStates:NonceManager;
     public dpopJtiStates:NonceManager;
+    // atomic single-use claims of authorisation sessions and codes of the embedded authorization server
+    public asClaims:NonceManager;
     public serverKeys:StringKeyedObject;
     public serverMetadata:any;
     public usesNonces:boolean;
@@ -54,6 +59,7 @@ export class Issuer
         this.nonceStates = new NonceManager(this.name);
         this.dpopNonceStates = new NonceManager(this.name + '#dpop-nonce');
         this.dpopJtiStates = new NonceManager(this.name + '#dpop-jti');
+        this.asClaims = new NonceManager(this.name + '#as-claim');
         this.serverKeys = {};
         this.usesNonces = _options.usesNonces ?? true;
     }
@@ -68,9 +74,94 @@ export class Issuer
         return this.key?.algorithms()[0] || 'EdDSA';
     }
 
+    /**
+     * The issuer itself is the authorization server of the pre-authorized_code flow, unless that
+     * is disabled with the preAuthorizedCode option
+     */
+    public usesPreAuthorizedCode():boolean
+    {
+        return this.options.preAuthorizedCode !== false;
+    }
+
     public usesAuthorisedCodeFlow()
     {
-        return this.options.authorizationEndpoint && this.options.authorizationEndpoint.length;
+        return this.usesExternalAuthorizationServer() || this.usesEmbeddedAS();
+    }
+
+    public usesExternalAuthorizationServer():boolean
+    {
+        return !!(this.options.authorizationEndpoint && this.options.authorizationEndpoint.length);
+    }
+
+    public usesEmbeddedAS():boolean
+    {
+        return !!this.options.embeddedAuthorizationServer?.enabled;
+    }
+
+    public embeddedASSettings():EmbeddedASSettings|null
+    {
+        return getEmbeddedASSettings(this.options);
+    }
+
+    /**
+     * The identifier of the authorization server of the pre-authorized_code flow: the issuer itself
+     */
+    public preAuthorizedASIdentifier():string
+    {
+        return this.options.baseUrl;
+    }
+
+    public embeddedASIdentifier():string
+    {
+        return this.options.baseUrl + '/as';
+    }
+
+    /**
+     * All authorization servers of this issuer, for the authorization_servers of the issuer metadata
+     */
+    public authorizationServers():string[]
+    {
+        const servers:string[] = [];
+        if (this.usesPreAuthorizedCode()) {
+            servers.push(this.preAuthorizedASIdentifier());
+        }
+        if (this.usesEmbeddedAS()) {
+            servers.push(this.embeddedASIdentifier());
+        }
+        if (this.usesExternalAuthorizationServer()) {
+            servers.push(this.options.authorizationEndpoint!);
+        }
+        return [...new Set(servers)];
+    }
+
+    /**
+     * The authorization server to name in the grant of a credential offer:
+     * - pre-authorized_code: the issuer itself
+     * - authorization_code with presentation during issuance: the embedded authorization server
+     * - other authorization_code: the external authorization server, or else the embedded one
+     * Throws an AuthorizationServerSelectionError if there is no suitable authorization server
+     */
+    public authorizationServerFor(flow:'pre-authorized_code'|'authorization_code', presentation:boolean):string
+    {
+        if (flow === 'pre-authorized_code') {
+            if (!this.usesPreAuthorizedCode()) {
+                throw new AuthorizationServerSelectionError('The pre-authorized_code flow is disabled for this issuer');
+            }
+            return this.preAuthorizedASIdentifier();
+        }
+        if (presentation) {
+            if (!this.usesEmbeddedAS()) {
+                throw new AuthorizationServerSelectionError('Presentation during issuance requires the embedded authorization server');
+            }
+            return this.embeddedASIdentifier();
+        }
+        if (this.usesExternalAuthorizationServer()) {
+            return this.options.authorizationEndpoint!;
+        }
+        if (this.usesEmbeddedAS()) {
+            return this.embeddedASIdentifier();
+        }
+        throw new AuthorizationServerSelectionError('No authorization server is configured for the authorization_code flow');
     }
 
     public async exportJWK()
@@ -172,7 +263,10 @@ export class Issuer
         if (!this.did?.did) {
             throw Error('No issuer configured for access tokens')
         }
-        jwt.payload.iss = this.did!.did;
+        // the embedded authorization server signs tokens with the issuer key, but under its own identifier
+        if (!jwt.payload.iss) {
+            jwt.payload.iss = this.did!.did;
+        }
         jwt.header.alg = this.algorithm();
         await jwt.sign(this.key!);
         return jwt.token;
@@ -229,7 +323,7 @@ export class Issuer
         }
     }
 
-    public async storeCredential(session:Session, credential:Credential)
+    public async storeCredential(session:Session, credential:Credential, dataSet:CredentialDataSet)
     {
         const dbConnection = await getDbConnection();
         const repo = dbConnection.getRepository(CredentialEntity);
@@ -263,7 +357,11 @@ export class Issuer
         }
         dbCred.status='ISSUED'; // initial status
         await repo.save(dbCred);
-        session.data.uuid = dbCred.uuid;
+        session.data.issuedCredentials = [...(session.data.issuedCredentials ?? []), {
+            uuid: dbCred.uuid,
+            dataset_id: dataSet.id,
+            credential_configuration_id: dataSet.credentialId
+        }];
     }
 
     public async clearExpired()
@@ -323,6 +421,33 @@ export class Issuer
         return null;
     }
 
+    /**
+     * Validate the credential configurations of this issuer. Throws a
+     * DeferredConfigurationError for incorrect deferred configurations.
+     * This needs the credential configuration store to be loaded.
+     */
+    public validateConfiguration()
+    {
+        validateAuthorizationServerConfiguration(this.options);
+        validateEmbeddedASConfiguration(this.options);
+        for (const id of Object.keys(this.metadata.credential_configurations_supported ?? {})) {
+            const config = this.getCredentialConfiguration(id);
+            if (config) {
+                validateDeferredConfiguration(id, config);
+            }
+        }
+    }
+
+    public getDeferredSettings(id:string): DeferredSettings|null
+    {
+        return getDeferredSettings(this.getCredentialConfiguration(id));
+    }
+
+    public hasDeferredCredentials(): boolean
+    {
+        return Object.keys(this.metadata.credential_configurations_supported ?? {}).some((id) => this.getDeferredSettings(id) !== null);
+    }
+
     public getCredentialContext(id:string): string[]
     {
         if (this.hasCredentialConfiguration(id)) {
@@ -354,6 +479,12 @@ export class Issuer
         metadata.credential_issuer = this.options.baseUrl;
         metadata.credential_endpoint = this.options.baseUrl + '/credentials';
         metadata.notification_endpoint = this.options.baseUrl + '/notification';
+        if (this.hasDeferredCredentials()) {
+            metadata.deferred_credential_endpoint = this.options.baseUrl + '/deferred';
+        }
+        else if (metadata.deferred_credential_endpoint) {
+            delete metadata.deferred_credential_endpoint;
+        }
         if (this.usesNonces) {
             metadata.nonce_endpoint = this.options.baseUrl + '/nonce';
         }
@@ -367,8 +498,9 @@ export class Issuer
         if (metadata.credential_request_encryption) {
             delete metadata.credential_request_encryption;
         }
-        if (this.options.authorizationEndpoint && this.options.authorizationEndpoint.length) {
-            metadata.authorization_servers = [this.options.authorizationEndpoint];
+        const servers = this.authorizationServers();
+        if (servers.length) {
+            metadata.authorization_servers = servers;
         }
         else if(metadata.authorization_servers) {
             delete metadata.authorization_servers;

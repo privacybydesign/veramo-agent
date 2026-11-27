@@ -4,7 +4,9 @@ import { Issuer } from "#root/issuer/Issuer";
 import { ErrorCodes } from '#root/types/api';
 import { CreateCredentialOfferRequest } from "#root/types/api/credentialOffer";
 import { ApiState } from "#root/types/internal";
-import { PRE_AUTHORIZED_CODE_GRANT } from '#root/types/specification/credential_offer';
+import { isValidCallbackUrl } from '#root/issuer/lib/isValidCallbackUrl';
+import { AUTHORIZATION_CODE_GRANT, PRE_AUTHORIZED_CODE_GRANT } from '#root/types/specification/credential_offer';
+import { checkAuthorizationServers } from '#root/issuer/lib/checkAuthorizationServers';
 
 export function validateCreateCredentialOffer(issuer:Issuer, request:CreateCredentialOfferRequest):ApiState
 {
@@ -41,12 +43,29 @@ export function validateCreateCredentialOffer(issuer:Issuer, request:CreateCrede
         return error;
     }
 
+    if (request.credential_callback !== undefined && !isValidCallbackUrl(request.credential_callback)) {
+        debug("invalid because the credential callback is not an http(s) URL");
+        error.error = ErrorCodes.INVALID_REQUEST;
+        error.description = "Invalid credential_callback: it must be an http(s) URL";
+        return error;
+    }
+
+    const asError = checkAuthorizationServers(issuer, !!request.grants[AUTHORIZATION_CODE_GRANT], !!request.grants[PRE_AUTHORIZED_CODE_GRANT], false);
+    if (asError) {
+        debug("invalid because there is no suitable authorization server", asError);
+        error.error = ErrorCodes.INVALID_REQUEST;
+        error.description = asError;
+        return error;
+    }
+
     // if pre-authorized-code is used, the proper credential data should be present
     // For this type-check, we use the credential format specification of our configuration, not
     // the credential ID. This allows us to (re)use credential formats with different credential
     // setups (for example: two AcademicBaseCredential's with different branding, or two
     // GenericCredential's with different VC format)        
-    if (request.grants[PRE_AUTHORIZED_CODE_GRANT]) {
+    // For deferred credentials the claims can be incomplete: the back-office supplies the
+    // (remaining) claims before the credential is released.
+    if (request.grants[PRE_AUTHORIZED_CODE_GRANT] && !issuer.getDeferredSettings(credentialConfigIds[0])) {
         if (!issuer.checkCredentialData(credentialConfigIds[0], request.credentialDataSupplierInput || {})) {
             debug("invalid because the requested credential data is incorrect", request.credentialDataSupplierInput);
             error.error = ErrorCodes.INVALID_REQUEST;

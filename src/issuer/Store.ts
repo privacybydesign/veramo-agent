@@ -10,9 +10,7 @@ import { loadJsonFiles } from "utils/generic.js";
 import { Issuer } from "./Issuer.js";
 import { IssuerConfiguration } from "types/internal.js";
 import { MetadataConfiguration } from "types/api/metadata.js";
-import { getDbConnection } from '#root/database/databaseService';
-import { Issuer as IssuerEntity } from '#root/database/entities/index';
-import { hasAdminBearerToken } from '#root/utils/adminBearerToken';
+import { DeferredConfigurationError } from './lib/deferredConfiguration.js';
 
 export interface IssuerStore {
     [x:string]:Issuer;
@@ -21,64 +19,10 @@ export interface IssuerStore {
 const _issuerStore:IssuerStore = {};
 export const getIssuerStore = ():IssuerStore => _issuerStore;
 
-async function readFromDB()
-{
-    try {
-        debug('initialising issuer store, reading database');
-        const dbConnection = await getDbConnection();
-        const issuerRepo = dbConnection.getRepository(IssuerEntity);
-        const issuers = await issuerRepo.createQueryBuilder('issuer').getMany();
-        for (const issuer of issuers) {
-            const entry = new Issuer({
-                name: issuer.name,
-                baseUrl: issuer.baseUrl,
-                clientId: issuer.clientId,
-                clientSecret: issuer.clientSecret,
-                adminToken: issuer.adminToken,
-                authorizationEndpoint: issuer.authorizationEndpoint,
-                tokenEndpoint: issuer.tokenEndpoint,
-                did: issuer.did,
-            }, JSON.parse(issuer.metadata ?? '{}'));
-
-            // we store the entry, then initialise. If there is an error on
-            // initialisation, do not read the file config to override this
-            // (which may/would/will cause double entries)
-            _issuerStore[issuer.name] = entry;
-            try {
-                await entry.setDid(); // do some asynchronous post-initialisation
-                await entry.retrieveASServerKeys(); // retrieve the AS server keys
-
-            }
-            catch (e) {
-                console.error("Caught error initialising issuer, skipping entry", e);
-            }
-        }
-    }
-    catch (e) {
-        console.error("Caught error initialising issuer store", e);
-    }
-}
-
-async function clearDB()
-{
-    try {
-        debug('initialising issuer store, reading database');
-        const dbConnection = await getDbConnection();
-        const issuerRepo = dbConnection.getRepository(IssuerEntity);
-        await issuerRepo.clear();
-    }
-    catch (e) {
-        console.error("Caught error initialising issuer store", e);
-    }
-}
-
 async function readFromFile()
 {
     try {
         debug('initialising issuer store, reading json files');
-        const dbConnection = await getDbConnection();
-        const issuerRepo = dbConnection.getRepository(IssuerEntity);
-
         try {
             const issuerOptionsObjects = loadJsonFiles<IssuerConfiguration>({path: ISSUER_PATH});
             const metadatas = loadJsonFiles<MetadataConfiguration>({path: METADATA_PATH});
@@ -93,6 +37,8 @@ async function readFromFile()
                     }
                     const config = issuerOptionsObjects.asObject[correlationId];
                     const issuer = new Issuer(config, metadata);
+                    // an incorrect deferred configuration is fatal: do not start with it
+                    issuer.validateConfiguration();
                     try {
                         await issuer.setDid(); // do some asynchronous post-initialisation
                         await issuer.retrieveASServerKeys(); // retrieve the AS server keys
@@ -102,38 +48,25 @@ async function readFromFile()
                     catch (e) {
                         console.error('Caught exception on initialising file based issuer config, skipping entry', e);
                     }
-
-                    // save the entry to the database as well
-                    const dbIssuer = new IssuerEntity();
-                    dbIssuer.name = correlationId;
-                    dbIssuer.adminToken = config.adminToken || '';
-                    dbIssuer.did = config.did;
-                    dbIssuer.baseUrl = config.baseUrl;
-                    dbIssuer.authorizationEndpoint = config.authorizationEndpoint;
-                    dbIssuer.tokenEndpoint = config.tokenEndpoint;
-                    dbIssuer.clientId = config.clientId;
-                    dbIssuer.clientSecret = config.clientSecret;
-                    dbIssuer.metadata = JSON.stringify(metadata);
-                    await issuerRepo.save(dbIssuer);
                 }
             }
         }
         catch (e) {
+            if (e instanceof DeferredConfigurationError) {
+                throw e;
+            }
             debug("Missing issuer configuration path", e);
         }
     }
     catch (e) {
+        if (e instanceof DeferredConfigurationError) {
+            throw e;
+        }
         console.error("Caught error initialising issuer store", e);
     }
 }
 
 export async function initialiseIssuerStore() {
-    if (hasAdminBearerToken()) {
-        await readFromDB();
-    }
-    else {
-        await clearDB();
-    }
     await readFromFile();
     debug('end of issuer store initialisation');
 }

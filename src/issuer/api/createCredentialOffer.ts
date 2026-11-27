@@ -2,17 +2,58 @@ import Debug from 'debug';
 const debug = Debug('issuer:api');
 import { Issuer } from '../Issuer.js';
 import { normalizeGrants } from '../../protocol/normalizeGrants.js';
-import { AUTHORIZATION_CODE_GRANT } from 'types/specification/credential_offer.js';
-import { CreateCredentialOfferRequest } from 'types/api/credentialOffer.js';
+import { AUTHORIZATION_CODE_GRANT, PRE_AUTHORIZED_CODE_GRANT } from 'types/specification/credential_offer.js';
+import { APIGrants, CreateCredentialOfferRequest } from 'types/api/credentialOffer.js';
+import { StringKeyedObject } from 'types/index.js';
 import { CredentialOfferData } from 'types/specification/credential_offer.js';
 import { CreateCredentialData } from 'types/internal.js';
 import { CredentialOfferStatus } from 'types/api.js';
 
+// The input for a single data set of an offer: one credential to be issued
+export interface OfferDataSetInput {
+    credentialId: string;           // the credential_configuration_id
+    data?: StringKeyedObject;
+    credential?: any;
+    callback?: string;
+}
+
+export interface OfferInput {
+    grants: APIGrants;
+    dataSets: OfferDataSetInput[];
+    credentialMetadata?: StringKeyedObject;
+    // verification during issuance: the DCQL query that the wallet has to answer before it gets an access token
+    presentation?: { dcql: object };
+}
+
+/**
+ * The identifier of a data set in the session. It is transaction-unique and is passed to the wallet as
+ * credential_identifier in the authorization_details of the token response.
+ */
+export function createDataSetId(credentialId:string, index:number):string
+{
+    return `${credentialId}#${index}`;
+}
+
+// The (v1) request offers a single credential
 export async function createCredentialOffer(issuer:Issuer, request:CreateCredentialOfferRequest):Promise<CreateCredentialData> {
     debug("creating credential offer", request);
-    const { grants, issuerState, preAuthorizedCode, userPin } = normalizeGrants(request.grants);
+    return createCredentialOfferForDataSets(issuer, {
+        grants: request.grants,
+        credentialMetadata: request.credentialMetadata,
+        dataSets: [{
+            credentialId: request.credentials[0],
+            data: request.credentialDataSupplierInput,
+            credential: request.credential,
+            callback: request.credential_callback
+        }]
+    });
+}
 
-    const credentialConfigIds = request.credentials as string[]
+export async function createCredentialOfferForDataSets(issuer:Issuer, input:OfferInput):Promise<CreateCredentialData> {
+    const { grants, issuerState, preAuthorizedCode, userPin } = normalizeGrants(input.grants);
+
+    // spec ID-1:4.1.1 -> a non-empty array of unique strings
+    const credentialConfigIds = [...new Set(input.dataSets.map((ds) => ds.credentialId))];
 
     const credentialOffer:CredentialOfferData = {
         // spec ID-1:4.1.1 -> Object indicating to the Wallet the Grant Types the Credential Issuer's
@@ -28,21 +69,13 @@ export async function createCredentialOffer(issuer:Issuer, request:CreateCredent
         credential_issuer: issuer.options.baseUrl,
     };
 
-    // If we use Authorized Code flow, pass the OAuth2 client_id in the offer
-    // This is an out-of-spec implementation of Sphereon, but not supported in
-    // the open source versions of the VcIssuer. 
+    // spec ID-1:4.1.1 -> authorization_server: the Wallet MUST use this authorization server for the
+    // grant. The issuer selects it, depending on the flow
     if (grants[AUTHORIZATION_CODE_GRANT]) {
-        debug("offer for authorisation_code flow");
-        if (issuer.options.clientId) {
-            credentialOffer.client_id = issuer.options.clientId;
-        }
-        else {
-            // EBSI stipulates that the credential_issuer is to be taken as client-id
-            // Although the wallet can decide on this client_id itself, we pass it
-            // along as out-of-spec data anyway
-            credentialOffer.client_id = credentialOffer.credential_issuer;
-        }
-        debug("client id is ", credentialOffer.client_id);
+        grants[AUTHORIZATION_CODE_GRANT].authorization_server = issuer.authorizationServerFor('authorization_code', !!input.presentation);
+    }
+    if (grants[PRE_AUTHORIZED_CODE_GRANT]) {
+        grants[PRE_AUTHORIZED_CODE_GRANT].authorization_server = issuer.authorizationServerFor('pre-authorized_code', false);
     }
 
     // before we create a new session, clear out the old ones
@@ -51,22 +84,27 @@ export async function createCredentialOffer(issuer:Issuer, request:CreateCredent
     const session = await issuer.getSessionById();
     session.data.status = CredentialOfferStatus.OFFER_CREATED;
     session.data.credentialOffer = credentialOffer;
-    session.data.metaData = request.credentialMetadata || {};
-    // TODO: update this when we want to support multiple credential issuance
-    // We need to create a list of ids allowed for this session by the offer
-    session.data.credentialId = credentialConfigIds[0];
+    session.data.metaData = input.credentialMetadata || {};
+    if (input.presentation) {
+        session.data.authorization = { presentation: { dcql: input.presentation.dcql } };
+    }
 
-    // store the requested dataset as a credential-data-set named after the credential id
+    // store the requested data sets, each with its own identifier. The wallet requests these
+    // one by one using the credential_identifiers of the access token response
     session.data.credentialDataSets = {};
-    // TODO: update this when we want to support multiple credential issuance
-    // We need to loop over all the ids supplied and set the relevant configuration and data
-    session.data.credentialDataSets[credentialConfigIds[0]] = {
-        credentialId: credentialConfigIds[0],
-        credentialConfiguration: issuer.getCredentialConfiguration(credentialConfigIds[0]),
-        data: request.credentialDataSupplierInput,
-        ...(request.credential && {credential: request.credential}),
-        ...(request.credential_callback && {callback: request.credential_callback})
-    };
+    input.dataSets.forEach((dataSet, idx) => {
+        const id = createDataSetId(dataSet.credentialId, idx);
+        // a deferred credential can be created without any data, as the back-office can supply it later
+        const deferredSettings = issuer.getDeferredSettings(dataSet.credentialId);
+        session.data.credentialDataSets[id] = {
+            id,
+            credentialId: dataSet.credentialId,
+            credentialConfiguration: issuer.getCredentialConfiguration(dataSet.credentialId)!,
+            data: deferredSettings ? (dataSet.data ?? {}) : dataSet.data,
+            ...(dataSet.credential && {credential: dataSet.credential}),
+            ...(dataSet.callback && {callback: dataSet.callback})
+        };
+    });
 
     if (userPin) {
         debug("using pincode ", userPin);
